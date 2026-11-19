@@ -1,0 +1,131 @@
+# One-command setup: `docker compose up --build`
+# Secrets come from .env (copy .env.example -> .env).
+
+x-service-env: &service-env
+  env_file: .env
+  restart: unless-stopped
+
+x-depends: &depends
+  postgres:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      AUDIENCE_DB_PASSWORD: ${AUDIENCE_DB_PASSWORD}
+      TZ: ${TZ:-Europe/Istanbul}
+      PGTZ: ${TZ:-Europe/Istanbul}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      TZ: ${TZ:-Europe/Istanbul}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      - "up"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  panel:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: panel/Dockerfile
+    ports:
+      - "${PANEL_PORT:-8080}:8080"
+    environment:
+      PANEL_PORT: "8080"
+    depends_on: *depends
+
+  manager:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: manager/Dockerfile
+    depends_on: *depends
+
+  customizer:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: customizer/Dockerfile
+    depends_on: *depends
+
+  smssender:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: smssender/Dockerfile
+    # Two competing consumers on the same queue: each batch goes to exactly one.
+    deploy:
+      replicas: 2
+    depends_on: *depends
+
+  emailsender:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: emailsender/Dockerfile
+    depends_on: *depends
+
+  pushsender:
+    <<: *service-env
+    build:
+      context: .
+      dockerfile: pushsender/Dockerfile
+    depends_on: *depends
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - panel
+
+volumes:
+  pgdata:
