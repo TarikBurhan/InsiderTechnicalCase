@@ -137,7 +137,8 @@ func (h *Handler) sendAll(ctx context.Context, msg dto.QueueMessage, recipients 
 		granted, err := h.limiter.Acquire(ctx, len(remaining))
 		if err != nil {
 			for _, r := range remaining {
-				results = append(results, dto.SendResult{DeliveryID: r.DeliveryID, Recipient: r.To, Err: fmt.Errorf("rate limiter: %w", err)})
+				results = append(results, dto.SendResult{DeliveryID: r.DeliveryID, Recipient: r.To, Attempt: msg.AttemptFor(r),
+					Err: fmt.Errorf("rate limiter: %w", err)})
 			}
 			break
 		}
@@ -158,13 +159,14 @@ func (h *Handler) sendWave(ctx context.Context, msg dto.QueueMessage, wave []dto
 		go func(i int, r dto.QueueRecipient) {
 			defer func() { <-sem; wg.Done() }()
 			start := time.Now()
-			key := fmt.Sprintf("%s-%d-%d", config.Channel, r.DeliveryID, msg.Attempt)
+			attempt := msg.AttemptFor(r)
+			key := fmt.Sprintf("%s-%d-%d", config.Channel, r.DeliveryID, attempt)
 			resp, err := h.provider.Send(ctx, request.NewProviderRequest(r.To, msg.ContentFor(r)), key)
 			elapsed := time.Since(start)
 			metrics.ProviderLatency.Observe(elapsed.Seconds())
 			out[i] = dto.SendResult{
 				DeliveryID: r.DeliveryID, Recipient: r.To, ProviderMessageID: resp.MessageID,
-				Err: err, Permanent: provider.IsPermanent(err), LatencyMs: elapsed.Milliseconds(),
+				Err: err, Permanent: provider.IsPermanent(err), LatencyMs: elapsed.Milliseconds(), Attempt: attempt,
 			}
 		}(i, r)
 	}
@@ -195,14 +197,14 @@ func (h *Handler) recordOutcome(ctx context.Context, msg dto.QueueMessage, resul
 			e := dto.LogEntry{NotificationID: msg.NotificationID, DeliveryID: &id}
 			if r.Err == nil {
 				e.Level, e.Event, e.Message = "INFO", "DELIVERY_SENT", "accepted by provider"
-				e.Details, _ = json.Marshal(map[string]any{"provider_message_id": r.ProviderMessageID, "latency_ms": r.LatencyMs, "attempt": msg.Attempt})
+				e.Details, _ = json.Marshal(map[string]any{"provider_message_id": r.ProviderMessageID, "latency_ms": r.LatencyMs, "attempt": r.Attempt})
 			} else {
 				f := statusByID[r.DeliveryID]
 				e.Level, e.Event, e.Message = "WARN", "DELIVERY_RETRY", r.Err.Error()
 				if f.Status == dto.DeliveryError {
 					e.Level, e.Event = "ERROR", "DELIVERY_FAILED"
 				}
-				e.Details, _ = json.Marshal(map[string]any{"retry_count": f.RetryCount, "permanent": r.Permanent, "attempt": msg.Attempt})
+				e.Details, _ = json.Marshal(map[string]any{"retry_count": f.RetryCount, "permanent": r.Permanent, "attempt": r.Attempt})
 			}
 			entries = append(entries, e)
 		}

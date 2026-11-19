@@ -41,6 +41,14 @@ func TestBuildMessage(t *testing.T) {
 	if msg.NotificationID != "n1" || msg.BatchNo != 3 || len(msg.Recipients) != 1 || msg.Recipients[0].To != "+905550000001" {
 		t.Fatalf("unexpected message %+v", msg)
 	}
+	if msg.Recipients[0].Attempt != 0 {
+		t.Fatal("first attempt must not set a per-recipient attempt")
+	}
+	retry := BuildMessage(Batch{Notification: dto.Notification{ID: "n1", Channel: "sms"}, Attempt: 3,
+		Targets: []dto.DeliveryTarget{{DeliveryID: 1, Recipient: "a", Attempt: 2}, {DeliveryID: 2, Recipient: "b", Attempt: 3}}})
+	if retry.Recipients[0].Attempt != 2 || retry.Recipients[1].Attempt != 3 {
+		t.Fatalf("per-recipient attempts lost: %+v", retry.Recipients)
+	}
 	if msg.MessageID == "" {
 		t.Fatal("message id must be set")
 	}

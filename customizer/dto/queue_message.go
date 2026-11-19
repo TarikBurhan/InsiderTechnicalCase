@@ -29,6 +29,7 @@ type QueueRecipient struct {
 	DeliveryID int64           `json:"delivery_id"`
 	ContactID  *int64          `json:"contact_id,omitempty"`
 	To         string          `json:"to"`
+	Attempt    int             `json:"attempt,omitempty"`
 	Content    *MessageContent `json:"content,omitempty"`
 }
 

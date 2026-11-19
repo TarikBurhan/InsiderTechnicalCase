@@ -21,6 +21,7 @@ type QueueRecipient struct {
 	DeliveryID int64           `json:"delivery_id"`
 	ContactID  *int64          `json:"contact_id,omitempty"`
 	To         string          `json:"to"`
+	Attempt    int             `json:"attempt,omitempty"` // set for retries
 	Content    *MessageContent `json:"content,omitempty"`
 }
 
@@ -37,6 +38,18 @@ type QueueMessage struct {
 	Content        MessageContent   `json:"content"`
 	Recipients     []QueueRecipient `json:"recipients"`
 	CreatedAt      time.Time        `json:"created_at"`
+}
+
+// AttemptFor returns the attempt number of r (its own for retries, else the
+// batch attempt).
+func (m QueueMessage) AttemptFor(r QueueRecipient) int {
+	if r.Attempt > 0 {
+		return r.Attempt
+	}
+	if m.Attempt > 0 {
+		return m.Attempt
+	}
+	return 1
 }
 
 // ContentFor returns the personalised content of r or the batch content.

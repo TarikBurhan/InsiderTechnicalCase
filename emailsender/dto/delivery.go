@@ -15,6 +15,7 @@ type SendResult struct {
 	Err               error
 	Permanent         bool
 	LatencyMs         int64
+	Attempt           int
 }
 
 // FailedDelivery is a failed delivery after its status was updated.

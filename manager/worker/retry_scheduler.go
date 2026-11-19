@@ -116,6 +116,9 @@ func (s *RetryScheduler) retryNotification(ctx context.Context, channel string, 
 		attempt := 0
 		for i, d := range chunk {
 			targets[i] = d.DeliveryTarget
+			// Each recipient keeps its own attempt number (used in the
+			// provider Idempotency-Key); a chunk can mix attempts.
+			targets[i].Attempt = d.RetryCount + 1
 			if d.RetryCount+1 > attempt {
 				attempt = d.RetryCount + 1
 			}

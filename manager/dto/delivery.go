@@ -11,6 +11,7 @@ type DeliveryTarget struct {
 	DeliveryID int64
 	ContactID  *int64
 	Recipient  string
+	Attempt    int // 0 = first attempt (the batch attempt is used)
 }
 
 // RetryDelivery is a delivery whose retry time has come.

@@ -43,7 +43,7 @@ func TargetQueue(n dto.Notification) (string, error) {
 func BuildMessage(b Batch) dto.QueueMessage {
 	recipients := make([]dto.QueueRecipient, len(b.Targets))
 	for i, t := range b.Targets {
-		recipients[i] = dto.QueueRecipient{DeliveryID: t.DeliveryID, ContactID: t.ContactID, To: t.Recipient}
+		recipients[i] = dto.QueueRecipient{DeliveryID: t.DeliveryID, ContactID: t.ContactID, To: t.Recipient, Attempt: t.Attempt}
 	}
 	return dto.QueueMessage{
 		MessageID:      uuid.NewString(),
