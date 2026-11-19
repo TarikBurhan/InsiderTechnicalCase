@@ -1,0 +1,15 @@
+DROP TRIGGER IF EXISTS trg_notifications_status ON notifications;
+DROP FUNCTION IF EXISTS notify_notification_status();
+DROP FUNCTION IF EXISTS acquire_rate_tokens(TEXT, INTEGER, INTEGER);
+DROP TABLE IF EXISTS rate_limit_windows;
+DROP TABLE IF EXISTS notification_logs;
+DROP TABLE IF EXISTS push_deliveries;
+DROP TABLE IF EXISTS email_deliveries;
+DROP TABLE IF EXISTS sms_deliveries;
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS push_content;
+DROP TABLE IF EXISTS email_content;
+DROP TABLE IF EXISTS sms_content;
+DROP TABLE IF EXISTS audience_groups;
+DROP TABLE IF EXISTS contact_purchases;
+DROP TABLE IF EXISTS master_contact;
