@@ -1,0 +1,22 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - gofmt
+    - misspell
+    - sqlclosecheck
+    - rowserrcheck
+
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (*github.com/rabbitmq/amqp091-go.Channel).Close
+      - (*github.com/rabbitmq/amqp091-go.Delivery).Nack

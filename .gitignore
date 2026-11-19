@@ -19,4 +19,4 @@ coverage.*
 Thumbs.db
 
 # Static Files
-.pdf
+*.pdf
