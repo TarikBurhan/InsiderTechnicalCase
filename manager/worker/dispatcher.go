@@ -40,6 +40,7 @@ type Dispatcher struct {
 	log           *slog.Logger
 
 	slots chan struct{}
+	wake  chan struct{} // a worker finished: poll again without waiting for the ticker
 	wg    sync.WaitGroup
 }
 
@@ -48,7 +49,7 @@ func NewDispatcher(n *repository.NotificationRepository, p *Processor, cfg Dispa
 	if cfg.Workers <= 0 {
 		cfg.Workers = 1
 	}
-	return &Dispatcher{notifications: n, processor: p, cfg: cfg, watchdog: wd, log: log, slots: make(chan struct{}, cfg.Workers)}
+	return &Dispatcher{notifications: n, processor: p, cfg: cfg, watchdog: wd, log: log, slots: make(chan struct{}, cfg.Workers), wake: make(chan struct{}, 1)}
 }
 
 // Run blocks until ctx is cancelled and all in-flight work stopped.
@@ -74,6 +75,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			d.log.Info("dispatcher stopped")
 			return
 		case <-poll.C:
+			d.poll(ctx)
+		case <-d.wake:
+			// A slot was freed; refill it right away so many small
+			// notifications are not throttled to Workers per poll interval.
 			d.poll(ctx)
 		case <-recovery.C:
 			d.recover(ctx)
@@ -133,6 +138,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, items []dto.Notification) {
 			defer func() {
 				<-d.slots
 				d.wg.Done()
+				select {
+				case d.wake <- struct{}{}:
+				default:
+				}
 			}()
 			d.processor.Process(ctx, n)
 		}(n)
