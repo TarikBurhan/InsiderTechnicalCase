@@ -21,6 +21,9 @@ type AudienceGroup struct {
 
 // ResolvedAudience is the outcome of validating an audience request.
 type ResolvedAudience struct {
+	// Pending is true when counting did not finish within the API timeout;
+	// the definition is valid and the count continues in the background.
+	Pending    bool
 	Type       string
 	SQL        *string
 	GroupID    *int64

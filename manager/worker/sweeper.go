@@ -12,6 +12,7 @@ import (
 	"notifier/manager/dto"
 	"notifier/manager/metrics"
 	"notifier/manager/repository"
+	"notifier/pkg/healthserver"
 	"notifier/pkg/tracing"
 )
 
@@ -26,17 +27,18 @@ type Sweeper struct {
 	interval   time.Duration
 	staleAfter time.Duration
 	limit      int
+	watchdog   *healthserver.Watchdog
 	log        *slog.Logger
 }
 
 // NewSweeper creates the sweeper.
-func NewSweeper(d *repository.DeliveryRepository, l *repository.LogRepository, interval, staleAfter time.Duration, limit int, log *slog.Logger) *Sweeper {
-	return &Sweeper{deliveries: d, logs: l, interval: interval, staleAfter: staleAfter, limit: limit, log: log}
+func NewSweeper(d *repository.DeliveryRepository, l *repository.LogRepository, interval, staleAfter time.Duration, limit int, wd *healthserver.Watchdog, log *slog.Logger) *Sweeper {
+	return &Sweeper{deliveries: d, logs: l, interval: interval, staleAfter: staleAfter, limit: limit, watchdog: wd, log: log}
 }
 
 // Run loops until ctx is cancelled.
 func (s *Sweeper) Run(ctx context.Context) {
-	runEvery(ctx, s.interval, func() {
+	runEvery(ctx, s.interval, s.watchdog, loopSweeper, func() {
 		for _, ch := range dto.Channels {
 			swept, err := s.deliveries.SweepStale(ctx, ch, s.staleAfter, s.limit)
 			if err != nil {

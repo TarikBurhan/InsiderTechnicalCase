@@ -71,6 +71,7 @@ services:
       - "${PANEL_PORT:-8080}:8080"
     environment:
       PANEL_PORT: "8080"
+      PANEL_AUDIENCE_VALIDATION_TIMEOUT: ${PANEL_AUDIENCE_VALIDATION_TIMEOUT:-10s}
     depends_on: *depends
 
   manager:

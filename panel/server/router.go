@@ -21,6 +21,7 @@ type Handlers struct {
 	Settings      *handlers.SettingHandler
 	RateLimiter   *RateLimiter
 	ReadyChecks   map[string]healthserver.Check
+	LiveChecks    map[string]healthserver.Check
 }
 
 // NewRouter builds the HTTP handler with all routes and middleware.
@@ -59,8 +60,15 @@ func NewRouter(h Handlers, log *slog.Logger) http.Handler {
 	// Observability
 	mux.HandleFunc("GET /api/v1/metrics", h.Metrics.Get)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	mux.Handle("GET /health", healthserver.LivenessHandler("panel"))
-	mux.Handle("GET /ready", healthserver.ReadinessHandler("panel", h.ReadyChecks))
+	ready := map[string]healthserver.Check{}
+	for k, v := range h.ReadyChecks {
+		ready[k] = v
+	}
+	for k, v := range h.LiveChecks {
+		ready[k] = v
+	}
+	mux.Handle("GET /health", healthserver.LivenessHandler("panel", h.LiveChecks))
+	mux.Handle("GET /ready", healthserver.ReadinessHandler("panel", ready))
 
 	// Real-time updates
 	mux.HandleFunc("GET /ws/notifications", h.WebSocket.Serve)

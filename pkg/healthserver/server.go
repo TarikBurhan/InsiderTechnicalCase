@@ -16,10 +16,31 @@ import (
 // Check is a readiness probe for a dependency.
 type Check func(ctx context.Context) error
 
-// LivenessHandler always answers 200 while the process is running.
-func LivenessHandler(service string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": service, "time": time.Now().UTC()})
+// LivenessHandler answers 200 while the process is alive. checks are
+// liveness checks (e.g. a Watchdog): when one fails the process is stuck and
+// 503 is returned so an orchestrator can restart it.
+func LivenessHandler(service string, checks map[string]Check) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		body := map[string]any{"status": "ok", "service": service, "time": time.Now().UTC()}
+		status := http.StatusOK
+		if len(checks) > 0 {
+			results := make(map[string]string, len(checks))
+			for name, check := range checks {
+				if err := check(ctx); err != nil {
+					results[name] = err.Error()
+					status = http.StatusServiceUnavailable
+				} else {
+					results[name] = "ok"
+				}
+			}
+			body["checks"] = results
+			if status != http.StatusOK {
+				body["status"] = "stuck"
+			}
+		}
+		writeJSON(w, status, body)
 	}
 }
 
@@ -48,8 +69,22 @@ func ReadinessHandler(service string, checks map[string]Check) http.HandlerFunc 
 
 // Run starts an HTTP server with health and metrics endpoints until ctx ends.
 func Run(ctx context.Context, addr, service string, checks map[string]Check, log *slog.Logger) {
+	RunWithLiveness(ctx, addr, service, checks, nil, log)
+}
+
+// RunWithLiveness is Run with additional liveness checks for /health.
+// Liveness checks are also part of /ready.
+func RunWithLiveness(ctx context.Context, addr, service string, checks, liveness map[string]Check, log *slog.Logger) {
+	ready := make(map[string]Check, len(checks)+len(liveness))
+	for k, v := range checks {
+		ready[k] = v
+	}
+	for k, v := range liveness {
+		ready[k] = v
+	}
+	checks = ready
 	mux := http.NewServeMux()
-	mux.Handle("GET /health", LivenessHandler(service))
+	mux.Handle("GET /health", LivenessHandler(service, liveness))
 	mux.Handle("GET /ready", ReadinessHandler(service, checks))
 	mux.Handle("GET /metrics", promhttp.Handler())
 

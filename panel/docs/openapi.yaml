@@ -79,6 +79,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CreateNotificationResponse' }
+        '202':
+          description: |
+            Accepted, but counting the audience exceeded the API timeout. The notification is stored as
+            AUDIENCE_CALCULATING, the count continues in the background and it becomes NEW when done.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateNotificationResponse' }
         '200':
           description: Idempotency key already used, original notification returned (`duplicate=true`)
           content:
@@ -114,7 +121,10 @@ paths:
     post:
       tags: [Notifications]
       summary: Create up to 1000 notifications in one request
-      description: All items are validated first (all-or-nothing) and inserted in a single transaction sharing one `batch_id`.
+      description: |
+        All items are validated first (all-or-nothing) and inserted in a single transaction sharing one `batch_id`.
+        Audience counting shares one time budget for the whole batch; items whose count does not finish are
+        stored as AUDIENCE_CALCULATING and the response is 202.
       requestBody:
         required: true
         content:
@@ -140,6 +150,8 @@ paths:
                   batch_id: { type: string, format: uuid }
                   count: { type: integer }
                   notifications: { type: array, items: { $ref: '#/components/schemas/CreateNotificationResponse' } }
+        '202':
+          description: Created; at least one audience is still being calculated (AUDIENCE_CALCULATING)
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /api/v1/batches/{batchId}:
@@ -260,6 +272,7 @@ paths:
                   count: { type: integer, description: Matching master_contact rows }
                   resolved_sql: { type: string }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '504': { $ref: '#/components/responses/AudienceTimeout' }
 
   /api/v1/audience-groups:
     post:
@@ -292,6 +305,7 @@ paths:
               schema: { $ref: '#/components/schemas/AudienceGroup' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '504': { $ref: '#/components/responses/AudienceTimeout' }
     get:
       tags: [Audiences]
       summary: List audience groups
@@ -494,7 +508,7 @@ paths:
   /health:
     get:
       tags: [Observability]
-      summary: Liveness probe
+      summary: Liveness probe (503 with status 'stuck' when a background loop stopped)
       responses:
         '200': { description: Alive }
 
@@ -552,6 +566,9 @@ components:
         X-RateLimit-Limit: { schema: { type: integer } }
         X-RateLimit-Remaining: { schema: { type: integer } }
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    AudienceTimeout:
+      description: The audience could not be counted within the time limit (the definition is valid)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     Conflict:
       description: Not allowed in the current state / duplicate
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -559,7 +576,7 @@ components:
   schemas:
     Channel: { type: string, enum: [sms, email, push] }
     Priority: { type: string, enum: [high, normal, low], default: normal }
-    NotificationStatus: { type: string, enum: [NEW, PROCESSING, SENDING, COMPLETE, ERROR, CANCELLED] }
+    NotificationStatus: { type: string, enum: [AUDIENCE_CALCULATING, NEW, PROCESSING, SENDING, COMPLETE, ERROR, CANCELLED] }
     DeliveryStatus: { type: string, enum: [SENDING, SENT, RETRY, ERROR, CANCELLED] }
 
     CreateNotificationRequest:
@@ -638,6 +655,7 @@ components:
         content: { $ref: '#/components/schemas/ContentPayload' }
         customized_content: { type: boolean }
         scheduled_at: { type: string, format: date-time }
+        audience_count: { type: integer, nullable: true, description: "Contacts the audience matched; null while AUDIENCE_CALCULATING" }
         total_recipients: { type: integer }
         error_message: { type: string }
         stats: { $ref: '#/components/schemas/DeliveryStats' }
@@ -654,7 +672,7 @@ components:
         - type: object
           properties:
             duplicate: { type: boolean }
-            audience_count: { type: integer }
+            message: { type: string, description: Set when the audience is still being calculated (202) }
 
     Delivery:
       type: object

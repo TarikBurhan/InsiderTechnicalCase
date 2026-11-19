@@ -25,6 +25,10 @@ type Config struct {
 	MaxBatchSize              int
 	MaxDirectRecipients       int
 	AudienceValidationTimeout time.Duration
+	AudienceBackgroundTimeout time.Duration
+	AudienceCalcWorkers       int
+	AudienceCalcPollInterval  time.Duration
+	AudienceCalcLease         time.Duration
 	AudienceExtraTables       []string
 	DefaultPageSize           int
 	MaxPageSize               int
@@ -65,6 +69,10 @@ func Load() Config {
 		MaxBatchSize:              config.Int("PANEL_MAX_BATCH_SIZE", 1000),
 		MaxDirectRecipients:       config.Int("PANEL_MAX_DIRECT_RECIPIENTS", 10000),
 		AudienceValidationTimeout: config.Duration("PANEL_AUDIENCE_VALIDATION_TIMEOUT", 10*time.Second),
+		AudienceBackgroundTimeout: config.Duration("PANEL_AUDIENCE_BACKGROUND_TIMEOUT", 30*time.Minute),
+		AudienceCalcWorkers:       config.Int("PANEL_AUDIENCE_CALC_WORKERS", 2),
+		AudienceCalcPollInterval:  config.Duration("PANEL_AUDIENCE_CALC_POLL_INTERVAL", 5*time.Second),
+		AudienceCalcLease:         config.Duration("PANEL_AUDIENCE_CALC_LEASE", time.Minute),
 		AudienceExtraTables:       config.List("PANEL_AUDIENCE_EXTRA_TABLES", []string{"contact_purchases"}),
 		DefaultPageSize:           config.Int("PANEL_DEFAULT_PAGE_SIZE", 20),
 		MaxPageSize:               config.Int("PANEL_MAX_PAGE_SIZE", 200),

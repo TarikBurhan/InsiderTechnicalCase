@@ -29,12 +29,20 @@ func NewNotificationHandler(svc *service.NotificationService, paging Paging, log
 	return &NotificationHandler{svc: svc, paging: paging, log: log}
 }
 
+// audienceTimeoutMessage explains a 202 answer.
+const audienceTimeoutMessage = "audience calculation timed out; the request is accepted and the audience is " +
+	"being calculated in the background (status AUDIENCE_CALCULATING). Poll GET /api/v1/notifications/{id} " +
+	"or subscribe to the WebSocket; it becomes NEW when the count is done."
+
 func toCreateResponse(res service.CreateResult) response.CreateNotificationResponse {
-	return response.CreateNotificationResponse{
+	out := response.CreateNotificationResponse{
 		NotificationResponse: response.FromNotification(res.Notification, nil),
 		Duplicate:            !res.Created,
-		AudienceCount:        res.AudienceCount,
 	}
+	if res.Notification.Status == dto.StatusAudienceCalculating {
+		out.Message = audienceTimeoutMessage
+	}
+	return out
 }
 
 // Create handles POST /api/v1/notifications.
@@ -52,8 +60,12 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := http.StatusCreated
-	if !res.Created {
+	switch {
+	case !res.Created:
 		status = http.StatusOK
+	case res.Notification.Status == dto.StatusAudienceCalculating:
+		// Timed out while counting: accepted, the calculation continues.
+		status = http.StatusAccepted
 	}
 	writeJSON(w, status, toCreateResponse(res))
 }
@@ -70,10 +82,14 @@ func (h *NotificationHandler) CreateBatch(w http.ResponseWriter, r *http.Request
 		return
 	}
 	out := response.BatchCreateResponse{BatchID: batchID, Count: len(results)}
+	status := http.StatusCreated
 	for _, res := range results {
+		if res.Created && res.Notification.Status == dto.StatusAudienceCalculating {
+			status = http.StatusAccepted
+		}
 		out.Notifications = append(out.Notifications, toCreateResponse(res))
 	}
-	writeJSON(w, http.StatusCreated, out)
+	writeJSON(w, status, out)
 }
 
 // Get handles GET /api/v1/notifications/{id}.

@@ -70,9 +70,28 @@ func (s *AudienceService) ContactColumns(ctx context.Context) (map[string]string
 	return schema[validation.MasterContactTable], nil
 }
 
-// Resolve validates an audience request for a channel. memo caches counts
-// of identical SQL inside one (batch) request.
-func (s *AudienceService) Resolve(ctx context.Context, channel string, req request.AudienceRequest, memo map[string]int64) (dto.ResolvedAudience, error) {
+// ResolveBudget is the time one API request may spend counting audiences
+// synchronously. A batch request shares one budget, so 1000 slow audiences
+// cannot keep the request open for 1000 timeouts. memo caches the counts of
+// identical SQL inside the request.
+type ResolveBudget struct {
+	deadline time.Time
+	memo     map[string]int64
+}
+
+// NewBudget starts a budget of the configured validation timeout.
+func (s *AudienceService) NewBudget() *ResolveBudget {
+	return &ResolveBudget{deadline: time.Now().Add(s.cfg.ValidationTimeout), memo: map[string]int64{}}
+}
+
+// Resolve validates an audience request for a channel. Static validation
+// errors and database rejections are returned as errors. When counting does
+// not finish within the budget the result is Pending: the definition is
+// valid and the count continues in the background.
+func (s *AudienceService) Resolve(ctx context.Context, channel string, req request.AudienceRequest, budget *ResolveBudget) (dto.ResolvedAudience, error) {
+	if budget == nil {
+		budget = s.NewBudget()
+	}
 	definition, _ := json.Marshal(req)
 	out := dto.ResolvedAudience{Type: strings.ToUpper(strings.TrimSpace(req.Type)), Definition: definition}
 
@@ -82,18 +101,29 @@ func (s *AudienceService) Resolve(ctx context.Context, channel string, req reque
 		if err != nil {
 			return out, err
 		}
-		count, err := s.countWithMemo(ctx, sql, memo)
+		out.SQL = &sql
+		out.Count, out.Pending, err = s.count(ctx, sql, budget)
 		if err != nil {
 			return out, err
 		}
-		out.SQL, out.Count = &sql, count
 
 	case dto.AudienceTypeFilter:
-		sql, count, err := s.buildFilter(ctx, req.Filter, memo)
+		if req.Filter == nil {
+			return out, validation.New("audience.filter", "filter is required for FILTER audiences")
+		}
+		schema, err := s.Schema(ctx)
 		if err != nil {
 			return out, err
 		}
-		out.SQL, out.Count = &sql, count
+		sql, err := validation.BuildFilterSQL(*req.Filter, schema)
+		if err != nil {
+			return out, err
+		}
+		out.SQL = &sql
+		out.Count, out.Pending, err = s.count(ctx, sql, budget)
+		if err != nil {
+			return out, err
+		}
 
 	case dto.AudienceTypeGroup:
 		if req.GroupID == nil {
@@ -122,43 +152,38 @@ func (s *AudienceService) Resolve(ctx context.Context, channel string, req reque
 	return out, nil
 }
 
-func (s *AudienceService) buildFilter(ctx context.Context, f *request.AudienceFilter, memo map[string]int64) (string, int64, error) {
-	if f == nil {
-		return "", 0, validation.New("audience.filter", "filter is required for FILTER audiences")
+// count runs the audience count within the remaining budget. It returns
+// pending=true (and no error) when the budget ran out.
+func (s *AudienceService) count(ctx context.Context, sql string, budget *ResolveBudget) (int64, bool, error) {
+	if c, ok := budget.memo[sql]; ok {
+		return c, false, nil
 	}
-	schema, err := s.Schema(ctx)
+	remaining := time.Until(budget.deadline)
+	if remaining <= 0 {
+		return 0, true, nil
+	}
+	count, err := s.repo.CountAudience(ctx, sql, remaining)
 	if err != nil {
-		return "", 0, err
-	}
-	sql, err := validation.BuildFilterSQL(*f, schema)
-	if err != nil {
-		return "", 0, err
-	}
-	count, err := s.countWithMemo(ctx, sql, memo)
-	return sql, count, err
-}
-
-func (s *AudienceService) countWithMemo(ctx context.Context, sql string, memo map[string]int64) (int64, error) {
-	if memo != nil {
-		if c, ok := memo[sql]; ok {
-			return c, nil
+		if repository.IsTimeout(err) && ctx.Err() == nil {
+			return 0, true, nil
 		}
-	}
-	count, err := s.repo.CountAudience(ctx, sql, s.cfg.ValidationTimeout)
-	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
-			return 0, validation.New("audience", "audience query rejected by database: "+pgErr.Message)
+			return 0, false, validation.New("audience", "audience query rejected by database: "+pgErr.Message)
 		}
-		return 0, err
+		return 0, false, err
 	}
 	if count == 0 {
-		return 0, validation.New("audience", "audience does not match any master_contact record")
+		return 0, false, validation.New("audience", "audience does not match any master_contact record")
 	}
-	if memo != nil {
-		memo[sql] = count
-	}
-	return count, nil
+	budget.memo[sql] = count
+	return count, false, nil
+}
+
+// CountInBackground counts an already validated audience SQL without the
+// API budget (used by the background audience calculator).
+func (s *AudienceService) CountInBackground(ctx context.Context, sql string, timeout time.Duration) (int64, error) {
+	return s.repo.CountAudience(ctx, sql, timeout)
 }
 
 // Validate dry-runs an audience definition.
@@ -166,7 +191,11 @@ func (s *AudienceService) Validate(ctx context.Context, req request.ValidateAudi
 	if !dto.IsValidChannel(req.Channel) {
 		return dto.ResolvedAudience{}, validation.New("channel", "channel must be one of sms, email, push")
 	}
-	return s.Resolve(ctx, req.Channel, req.Audience, nil)
+	res, err := s.Resolve(ctx, req.Channel, req.Audience, nil)
+	if err == nil && res.Pending {
+		return res, ErrAudienceTimeout
+	}
+	return res, err
 }
 
 // CreateGroup validates and saves an audience group. Validation happens
@@ -188,6 +217,10 @@ func (s *AudienceService) CreateGroup(ctx context.Context, req request.CreateAud
 	resolved, err := s.Resolve(ctx, "", request.AudienceRequest{Type: t, SQL: req.SQL, Filter: req.Filter}, nil)
 	if err != nil {
 		return dto.AudienceGroup{}, err
+	}
+	if resolved.Pending {
+		// Groups must be fully validated when they are saved.
+		return dto.AudienceGroup{}, ErrAudienceTimeout
 	}
 	var desc *string
 	if d := strings.TrimSpace(req.Description); d != "" {

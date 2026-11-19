@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,9 @@ func (r *DeliveryRepository) InsertBatch(ctx context.Context, channel, notificat
 	if err != nil {
 		return nil, err
 	}
+	// A batch must not contain the same address twice, otherwise the upsert
+	// fails ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+	contacts = DedupeContacts(channel, contacts)
 	contactIDs := make([]*int64, len(contacts))
 	recipients := make([]string, len(contacts))
 	for i, c := range contacts {
@@ -46,6 +50,26 @@ func (r *DeliveryRepository) InsertBatch(ctx context.Context, channel, notificat
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// DedupeContacts keeps the first contact of every address (trimmed, emails
+// case-insensitive) and returns them with trimmed addresses.
+func DedupeContacts(channel string, contacts []dto.AudienceContact) []dto.AudienceContact {
+	seen := make(map[string]struct{}, len(contacts))
+	out := make([]dto.AudienceContact, 0, len(contacts))
+	for _, c := range contacts {
+		key := dto.AddressKey(channel, c.Address)
+		if key == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		c.Address = strings.TrimSpace(c.Address)
+		out = append(out, c)
+	}
+	return out
 }
 
 // ClaimDueRetries claims RETRY rows whose next_retry_at has passed.

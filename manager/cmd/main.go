@@ -76,21 +76,25 @@ func run(cfg config.Config, log *slog.Logger) error {
 	audience := repository.NewAudienceRepository(readerPool, cfg.AudienceQueryTimeout)
 	logs := repository.NewLogRepository(pool, cfg.ServiceName)
 
+	// Liveness: every background loop must keep ticking and every notification
+	// being processed must keep making progress.
+	watchdog := healthserver.NewWatchdog(cfg.ProcessingStallAfter)
+
 	processor := worker.NewProcessor(notifications, deliveries, audience, logs, batchPublisher, worker.ProcessorConfig{
 		BatchSize:             cfg.BatchSize,
 		HeartbeatInterval:     cfg.HeartbeatInterval,
 		MaxProcessingAttempts: cfg.MaxProcessingAttempts,
-	}, log)
+	}, watchdog, log)
 	dispatcher := worker.NewDispatcher(notifications, processor, worker.DispatcherConfig{
 		PollInterval:         cfg.PollInterval,
 		Workers:              cfg.Workers,
 		StaleProcessingAfter: cfg.StaleProcessingAfter,
 		RecoveryInterval:     cfg.RecoveryInterval,
-	}, log)
+	}, watchdog, log)
 	retries := worker.NewRetryScheduler(notifications, deliveries, logs, batchPublisher,
-		cfg.RetryPollInterval, cfg.RetryClaimLimit, cfg.BatchSize, log)
-	finalizer := worker.NewFinalizer(notifications, logs, cfg.FinalizerInterval, log)
-	sweeper := worker.NewSweeper(deliveries, logs, cfg.SweeperInterval, cfg.StaleSendingAfter, cfg.SweeperClaimLimit, log)
+		cfg.RetryPollInterval, cfg.RetryClaimLimit, cfg.BatchSize, watchdog, log)
+	finalizer := worker.NewFinalizer(notifications, logs, cfg.FinalizerInterval, watchdog, log)
+	sweeper := worker.NewSweeper(deliveries, logs, cfg.SweeperInterval, cfg.StaleSendingAfter, cfg.SweeperClaimLimit, watchdog, log)
 
 	// Every loop runs in its own goroutine so none of them blocks another.
 	var wg sync.WaitGroup
@@ -107,11 +111,11 @@ func run(cfg config.Config, log *slog.Logger) error {
 	start(finalizer.Run)
 	start(sweeper.Run)
 	start(func(ctx context.Context) {
-		healthserver.Run(ctx, ":"+cfg.HealthPort, cfg.ServiceName, map[string]healthserver.Check{
+		healthserver.RunWithLiveness(ctx, ":"+cfg.HealthPort, cfg.ServiceName, map[string]healthserver.Check{
 			"postgres": pool.Ping,
 			"rabbitmq": mq.Healthy,
 			"timezone": tz.Check(pool),
-		}, log)
+		}, map[string]healthserver.Check{"watchdog": watchdog.Check}, log)
 	})
 
 	log.Info("manager started")

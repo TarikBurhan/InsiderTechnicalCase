@@ -31,9 +31,13 @@ type NotificationConfig struct {
 
 // CreateResult is the outcome of creating one notification.
 type CreateResult struct {
-	Notification  dto.Notification
-	Created       bool
-	AudienceCount int64
+	Notification dto.Notification
+	Created      bool
+}
+
+// AudienceCalculationTrigger wakes the background audience calculator.
+type AudienceCalculationTrigger interface {
+	Kick()
 }
 
 // NotificationService handles notification requests coming from the API.
@@ -43,6 +47,7 @@ type NotificationService struct {
 	logs       *repository.LogRepository
 	audience   *AudienceService
 	contents   *ContentService
+	calculator AudienceCalculationTrigger
 	cfg        NotificationConfig
 	log        *slog.Logger
 }
@@ -50,13 +55,13 @@ type NotificationService struct {
 // NewNotificationService creates the service.
 func NewNotificationService(repo *repository.NotificationRepository, deliveries *repository.DeliveryRepository,
 	logs *repository.LogRepository, audience *AudienceService, contents *ContentService,
-	cfg NotificationConfig, log *slog.Logger) *NotificationService {
+	calculator AudienceCalculationTrigger, cfg NotificationConfig, log *slog.Logger) *NotificationService {
 	return &NotificationService{repo: repo, deliveries: deliveries, logs: logs, audience: audience,
-		contents: contents, cfg: cfg, log: log}
+		contents: contents, calculator: calculator, cfg: cfg, log: log}
 }
 
 // prepare validates a request and turns it into an insertable notification.
-func (s *NotificationService) prepare(ctx context.Context, req request.CreateNotificationRequest, memo map[string]int64) (dto.NewNotification, int64, error) {
+func (s *NotificationService) prepare(ctx context.Context, req request.CreateNotificationRequest, budget *ResolveBudget) (dto.NewNotification, error) {
 	var errs validation.Errors
 	channel := strings.ToLower(strings.TrimSpace(req.Channel))
 	if !dto.IsValidChannel(channel) {
@@ -79,25 +84,25 @@ func (s *NotificationService) prepare(ctx context.Context, req request.CreateNot
 		errs.Add("customized_content", "customized content requires a contact based audience (SQL, FILTER or GROUP)")
 	}
 	if len(errs) > 0 {
-		return dto.NewNotification{}, 0, errs
+		return dto.NewNotification{}, errs
 	}
 
 	cctx, span := tracing.StartChild(ctx, "panel.resolve_content")
 	content, err := s.contents.ResolveForNotification(cctx, channel, req.ContentID, req.Content, req.CustomizedContent)
 	span.End()
 	if err != nil {
-		return dto.NewNotification{}, 0, err
+		return dto.NewNotification{}, err
 	}
 	actx, span := tracing.StartChild(ctx, "panel.resolve_audience")
-	audience, err := s.audience.Resolve(actx, channel, req.Audience, memo)
+	audience, err := s.audience.Resolve(actx, channel, req.Audience, budget)
 	span.End()
 	if err != nil {
-		return dto.NewNotification{}, 0, err
+		return dto.NewNotification{}, err
 	}
 
 	contentJSON, err := json.Marshal(content)
 	if err != nil {
-		return dto.NewNotification{}, 0, err
+		return dto.NewNotification{}, err
 	}
 	n := dto.NewNotification{
 		CorrelationID:      correlation.FromContext(ctx),
@@ -113,16 +118,25 @@ func (s *NotificationService) prepare(ctx context.Context, req request.CreateNot
 		ScheduledAt:        req.ScheduledAt.Ptr(),
 		// Stored so the Manager continues this request's trace.
 		TraceContext: tracing.Carrier(ctx),
+		Status:       dto.StatusNew,
+	}
+	if audience.Pending {
+		// Counting exceeded the API timeout: store the notification and let
+		// the background calculator finish the count before it becomes NEW.
+		n.Status = dto.StatusAudienceCalculating
+	} else {
+		count := audience.Count
+		n.AudienceCount = &count
 	}
 	if audience.Type == dto.AudienceTypeDirect {
 		if n.Recipients, err = json.Marshal(audience.Recipients); err != nil {
-			return dto.NewNotification{}, 0, err
+			return dto.NewNotification{}, err
 		}
 	}
 	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
 		n.IdempotencyKey = &key
 	}
-	return n, audience.Count, nil
+	return n, nil
 }
 
 // Create validates and stores a single notification as NEW. Re-using an
@@ -131,14 +145,14 @@ func (s *NotificationService) Create(ctx context.Context, req request.CreateNoti
 	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
 		existing, err := s.repo.GetByIdempotencyKey(ctx, key)
 		if err == nil {
-			return CreateResult{Notification: existing, Created: false, AudienceCount: int64(existing.TotalRecipients)}, nil
+			return CreateResult{Notification: existing, Created: false}, nil
 		}
 		if !errors.Is(err, repository.ErrNotFound) {
 			return CreateResult{}, err
 		}
 	}
 
-	n, count, err := s.prepare(ctx, req, nil)
+	n, err := s.prepare(ctx, req, s.audience.NewBudget())
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -147,10 +161,9 @@ func (s *NotificationService) Create(ctx context.Context, req request.CreateNoti
 		return CreateResult{}, err
 	}
 	if created {
-		s.writeLog(ctx, saved, "NOTIFICATION_CREATED", "notification request accepted",
-			map[string]any{"audience_type": saved.AudienceType, "audience_count": count, "priority": saved.Priority})
+		s.afterCreate(ctx, saved, "")
 	}
-	return CreateResult{Notification: saved, Created: created, AudienceCount: count}, nil
+	return CreateResult{Notification: saved, Created: created}, nil
 }
 
 // CreateBatch validates every item first (all-or-nothing) and inserts them
@@ -164,12 +177,11 @@ func (s *NotificationService) CreateBatch(ctx context.Context, req request.Batch
 	}
 
 	batchID := uuid.NewString()
-	memo := map[string]int64{}
+	budget := s.audience.NewBudget() // one counting budget for the whole batch
 	items := make([]dto.NewNotification, len(req.Notifications))
-	counts := make([]int64, len(req.Notifications))
 	var errs validation.Errors
 	for i, r := range req.Notifications {
-		n, count, err := s.prepare(ctx, r, memo)
+		n, err := s.prepare(ctx, r, budget)
 		if err != nil {
 			var verrs validation.Errors
 			if errors.As(err, &verrs) {
@@ -179,7 +191,7 @@ func (s *NotificationService) CreateBatch(ctx context.Context, req request.Batch
 			return "", nil, err
 		}
 		n.BatchID = &batchID
-		items[i], counts[i] = n, count
+		items[i] = n
 	}
 	if len(errs) > 0 {
 		return "", nil, errs
@@ -191,9 +203,11 @@ func (s *NotificationService) CreateBatch(ctx context.Context, req request.Batch
 	}
 	results := make([]CreateResult, len(saved))
 	for i := range saved {
-		results[i] = CreateResult{Notification: saved[i], Created: created[i], AudienceCount: counts[i]}
+		results[i] = CreateResult{Notification: saved[i], Created: created[i]}
+		if created[i] {
+			s.afterCreate(ctx, saved[i], batchID)
+		}
 	}
-	s.writeLogBatch(ctx, results, batchID)
 	return batchID, results, nil
 }
 
@@ -265,11 +279,19 @@ func (s *NotificationService) writeLog(ctx context.Context, n dto.Notification, 
 	}
 }
 
-func (s *NotificationService) writeLogBatch(ctx context.Context, results []CreateResult, batchID string) {
-	for _, r := range results {
-		if r.Created {
-			s.writeLog(ctx, r.Notification, "NOTIFICATION_CREATED", "notification request accepted (batch)",
-				map[string]any{"batch_id": batchID, "audience_count": r.AudienceCount})
+// afterCreate logs the creation and wakes the background calculator when
+// the audience is still being counted.
+func (s *NotificationService) afterCreate(ctx context.Context, n dto.Notification, batchID string) {
+	details := map[string]any{"audience_type": n.AudienceType, "priority": n.Priority, "audience_count": n.AudienceCount}
+	if batchID != "" {
+		details["batch_id"] = batchID
+	}
+	s.writeLog(ctx, n, "NOTIFICATION_CREATED", "notification request accepted", details)
+	if n.Status == dto.StatusAudienceCalculating {
+		s.writeLog(ctx, n, "AUDIENCE_CALCULATION_DEFERRED",
+			"audience count exceeded the API timeout; continuing in the background", nil)
+		if s.calculator != nil {
+			s.calculator.Kick()
 		}
 	}
 }

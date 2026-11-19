@@ -24,6 +24,7 @@ type NotificationResponse struct {
 	Content           json.RawMessage    `json:"content"`
 	CustomizedContent bool               `json:"customized_content"`
 	ScheduledAt       *time.Time         `json:"scheduled_at,omitempty"`
+	AudienceCount     *int64             `json:"audience_count"`
 	TotalRecipients   int                `json:"total_recipients"`
 	ErrorMessage      *string            `json:"error_message,omitempty"`
 	Stats             *dto.DeliveryStats `json:"stats,omitempty"`
@@ -38,8 +39,8 @@ type NotificationResponse struct {
 // CreateNotificationResponse is returned after creating a notification.
 type CreateNotificationResponse struct {
 	NotificationResponse
-	Duplicate     bool  `json:"duplicate"`
-	AudienceCount int64 `json:"audience_count"`
+	Duplicate bool   `json:"duplicate"`
+	Message   string `json:"message,omitempty"`
 }
 
 // BatchCreateResponse is returned after a batch creation.
@@ -105,6 +106,7 @@ func FromNotification(n dto.Notification, stats *dto.DeliveryStats) Notification
 		Content:           n.Content,
 		CustomizedContent: n.CustomizedContent,
 		ScheduledAt:       n.ScheduledAt,
+		AudienceCount:     n.AudienceCount,
 		TotalRecipients:   n.TotalRecipients,
 		ErrorMessage:      n.ErrorMessage,
 		Stats:             stats,

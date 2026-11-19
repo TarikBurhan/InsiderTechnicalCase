@@ -19,6 +19,7 @@ import (
 	"notifier/panel/server"
 	"notifier/panel/service"
 	"notifier/panel/websocket"
+	"notifier/panel/worker"
 	"notifier/pkg/healthserver"
 	"notifier/pkg/logger"
 	"notifier/pkg/postgres"
@@ -82,6 +83,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	logRepo := repository.NewLogRepository(pool, cfg.ServiceName)
 	metricsRepo := repository.NewMetricsRepository(pool)
 	settingRepo := repository.NewSettingRepository(pool)
+	calcRepo := repository.NewAudienceCalculationRepository(pool)
 
 	// Services
 	audienceSvc := service.NewAudienceService(audienceRepo, service.AudienceConfig{
@@ -90,8 +92,21 @@ func run(cfg config.Config, log *slog.Logger) error {
 		MaxDirectRecipients: cfg.MaxDirectRecipients,
 	})
 	contentSvc := service.NewContentService(contentRepo, audienceSvc)
+
+	// Background work: audiences that could not be counted within the API
+	// timeout are finished here. The watchdog marks the Panel as stuck when
+	// the loop stops ticking or a calculation makes no progress.
+	watchdog := healthserver.NewWatchdog(cfg.AudienceBackgroundTimeout + 5*time.Minute)
+	calculator := worker.NewAudienceCalculator(calcRepo, audienceSvc, logRepo, worker.AudienceCalculatorConfig{
+		Workers:      cfg.AudienceCalcWorkers,
+		PollInterval: cfg.AudienceCalcPollInterval,
+		Lease:        cfg.AudienceCalcLease,
+		Timeout:      cfg.AudienceBackgroundTimeout,
+	}, watchdog, log)
+	go calculator.Run(ctx)
+
 	notificationSvc := service.NewNotificationService(notificationRepo, deliveryRepo, logRepo, audienceSvc, contentSvc,
-		service.NotificationConfig{MaxBatchSize: cfg.MaxBatchSize}, log)
+		calculator, service.NotificationConfig{MaxBatchSize: cfg.MaxBatchSize}, log)
 	metricsSvc := service.NewMetricsService(metricsRepo, mq)
 	settingSvc := service.NewSettingService(settingRepo, tz, log)
 
@@ -123,6 +138,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 			"rabbitmq": mq.Healthy,
 			"timezone": tz.Check(pool),
 		},
+		LiveChecks: map[string]healthserver.Check{"watchdog": watchdog.Check},
 	}, log)
 
 	srv := &http.Server{

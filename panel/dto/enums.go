@@ -18,12 +18,13 @@ const (
 
 // Notification statuses.
 const (
-	StatusNew        = "NEW"
-	StatusProcessing = "PROCESSING"
-	StatusSending    = "SENDING"
-	StatusComplete   = "COMPLETE"
-	StatusError      = "ERROR"
-	StatusCancelled  = "CANCELLED"
+	StatusAudienceCalculating = "AUDIENCE_CALCULATING"
+	StatusNew                 = "NEW"
+	StatusProcessing          = "PROCESSING"
+	StatusSending             = "SENDING"
+	StatusComplete            = "COMPLETE"
+	StatusError               = "ERROR"
+	StatusCancelled           = "CANCELLED"
 )
 
 // Delivery statuses.
@@ -59,7 +60,7 @@ func IsValidPriority(p string) bool {
 // IsValidStatus reports whether s is a notification status.
 func IsValidStatus(s string) bool {
 	switch s {
-	case StatusNew, StatusProcessing, StatusSending, StatusComplete, StatusError, StatusCancelled:
+	case StatusAudienceCalculating, StatusNew, StatusProcessing, StatusSending, StatusComplete, StatusError, StatusCancelled:
 		return true
 	}
 	return false

@@ -15,6 +15,7 @@ import (
 	"notifier/manager/publisher"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/healthserver"
 	"notifier/pkg/tracing"
 )
 
@@ -28,19 +29,20 @@ type RetryScheduler struct {
 	interval      time.Duration
 	claimLimit    int
 	batchSize     int
+	watchdog      *healthserver.Watchdog
 	log           *slog.Logger
 }
 
 // NewRetryScheduler creates the scheduler.
 func NewRetryScheduler(n *repository.NotificationRepository, d *repository.DeliveryRepository, l *repository.LogRepository,
-	p *publisher.BatchPublisher, interval time.Duration, claimLimit, batchSize int, log *slog.Logger) *RetryScheduler {
+	p *publisher.BatchPublisher, interval time.Duration, claimLimit, batchSize int, wd *healthserver.Watchdog, log *slog.Logger) *RetryScheduler {
 	return &RetryScheduler{notifications: n, deliveries: d, logs: l, publisher: p, interval: interval,
-		claimLimit: claimLimit, batchSize: batchSize, log: log}
+		claimLimit: claimLimit, batchSize: batchSize, watchdog: wd, log: log}
 }
 
 // Run loops until ctx is cancelled.
 func (s *RetryScheduler) Run(ctx context.Context) {
-	runEvery(ctx, s.interval, func() {
+	runEvery(ctx, s.interval, s.watchdog, loopRetry, func() {
 		for _, ch := range dto.Channels {
 			s.runChannel(ctx, ch)
 		}
@@ -146,12 +148,15 @@ func idsOf(items []dto.RetryDelivery) []int64 {
 	return out
 }
 
-// runEvery calls fn immediately and then on every tick until ctx ends.
-func runEvery(ctx context.Context, interval time.Duration, fn func()) {
+// runEvery calls fn immediately and then on every tick until ctx ends. The
+// loop is registered on the watchdog and beats after every iteration.
+func runEvery(ctx context.Context, interval time.Duration, wd *healthserver.Watchdog, name string, fn func()) {
+	wd.Loop(name, interval)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		fn()
+		wd.Beat(name)
 		select {
 		case <-ctx.Done():
 			return

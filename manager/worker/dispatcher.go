@@ -8,6 +8,16 @@ import (
 
 	"notifier/manager/dto"
 	"notifier/manager/repository"
+	"notifier/pkg/healthserver"
+)
+
+// Watchdog loop names.
+const (
+	loopPoll      = "manager.poll"
+	loopRecovery  = "manager.recovery"
+	loopRetry     = "manager.retry_scheduler"
+	loopFinalizer = "manager.finalizer"
+	loopSweeper   = "manager.sweeper"
 )
 
 // DispatcherConfig tunes polling and recovery.
@@ -26,6 +36,7 @@ type Dispatcher struct {
 	notifications *repository.NotificationRepository
 	processor     *Processor
 	cfg           DispatcherConfig
+	watchdog      *healthserver.Watchdog
 	log           *slog.Logger
 
 	slots chan struct{}
@@ -33,16 +44,20 @@ type Dispatcher struct {
 }
 
 // NewDispatcher creates a dispatcher.
-func NewDispatcher(n *repository.NotificationRepository, p *Processor, cfg DispatcherConfig, log *slog.Logger) *Dispatcher {
+func NewDispatcher(n *repository.NotificationRepository, p *Processor, cfg DispatcherConfig, wd *healthserver.Watchdog, log *slog.Logger) *Dispatcher {
 	if cfg.Workers <= 0 {
 		cfg.Workers = 1
 	}
-	return &Dispatcher{notifications: n, processor: p, cfg: cfg, log: log, slots: make(chan struct{}, cfg.Workers)}
+	return &Dispatcher{notifications: n, processor: p, cfg: cfg, watchdog: wd, log: log, slots: make(chan struct{}, cfg.Workers)}
 }
 
 // Run blocks until ctx is cancelled and all in-flight work stopped.
 func (d *Dispatcher) Run(ctx context.Context) {
 	d.log.Info("dispatcher started", slog.Int("workers", d.cfg.Workers), slog.Duration("poll_interval", d.cfg.PollInterval))
+
+	// The watchdog reports the service as stuck when these loops stop ticking.
+	d.watchdog.Loop(loopPoll, d.cfg.PollInterval)
+	d.watchdog.Loop(loopRecovery, d.cfg.RecoveryInterval)
 
 	// Startup recovery: re-process notifications stuck in PROCESSING.
 	d.recover(ctx)
@@ -70,6 +85,7 @@ func (d *Dispatcher) free() int { return cap(d.slots) - len(d.slots) }
 
 // poll claims as many NEW notifications as there are free workers.
 func (d *Dispatcher) poll(ctx context.Context) {
+	defer d.watchdog.Beat(loopPoll)
 	for ctx.Err() == nil {
 		free := d.free()
 		if free == 0 {
@@ -91,6 +107,7 @@ func (d *Dispatcher) poll(ctx context.Context) {
 
 // recover claims PROCESSING notifications whose heartbeat is stale.
 func (d *Dispatcher) recover(ctx context.Context) {
+	defer d.watchdog.Beat(loopRecovery)
 	free := d.free()
 	if free == 0 || ctx.Err() != nil {
 		return

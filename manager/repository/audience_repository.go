@@ -47,7 +47,7 @@ func (r *AudienceRepository) Stream(ctx context.Context, audienceSQL, channel st
 	if _, err := tx.Exec(ctx, queries.SetStatementTimeout(r.timeout.Milliseconds())); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, queries.StreamAudience(audienceSQL, dto.AddressColumn(channel)))
+	rows, err := tx.Query(ctx, queries.StreamAudience(audienceSQL, dto.AddressColumn(channel), dto.AddressKeyExpr(channel)))
 	if err != nil {
 		return wrapQueryError(err)
 	}

@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"notifier/panel/dto"
@@ -37,7 +39,11 @@ func (r *AudienceRepository) CountAudience(ctx context.Context, audienceSQL stri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, queries.SetStatementTimeout(timeout.Milliseconds())); err != nil {
+	ms := timeout.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	if _, err := tx.Exec(ctx, queries.SetStatementTimeout(ms)); err != nil {
 		return 0, err
 	}
 	var count int64
@@ -45,6 +51,15 @@ func (r *AudienceRepository) CountAudience(ctx context.Context, audienceSQL stri
 		return 0, err
 	}
 	return count, nil
+}
+
+// IsTimeout reports whether err is a statement timeout / deadline.
+func IsTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "57014" // query_canceled
 }
 
 // TableSchema loads the column list of the given tables.

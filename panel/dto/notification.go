@@ -43,6 +43,7 @@ type Notification struct {
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	TraceContext       string
+	AudienceCount      *int64
 }
 
 // NewNotification is the data needed to insert a notification.
@@ -62,6 +63,8 @@ type NewNotification struct {
 	CustomizedContent  bool
 	ScheduledAt        *time.Time
 	TraceContext       string
+	Status             string // NEW, or AUDIENCE_CALCULATING when counting timed out
+	AudienceCount      *int64
 }
 
 // NotificationFilter is used to list notifications.
@@ -117,6 +120,16 @@ type NotificationLog struct {
 	TraceID        *string
 	Details        json.RawMessage
 	CreatedAt      time.Time
+}
+
+// AudienceCalculation is a notification whose audience is counted in the
+// background.
+type AudienceCalculation struct {
+	NotificationID string
+	Channel        string
+	CorrelationID  string
+	AudienceSQL    string
+	TraceContext   string
 }
 
 // StatusEvent is broadcast to WebSocket clients when a status changes.

@@ -41,6 +41,9 @@ type Config struct {
 	SweeperInterval   time.Duration
 	StaleSendingAfter time.Duration
 	SweeperClaimLimit int
+
+	// A notification without progress for this long marks the service as stuck.
+	ProcessingStallAfter time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -55,7 +58,7 @@ func Load() Config {
 		batch = 100
 	}
 
-	return Config{
+	cfg := Config{
 		ServiceName: "manager",
 		LogLevel:    config.String("LOG_LEVEL", "info"),
 		HealthPort:  config.String("MANAGER_HEALTH_PORT", "8081"),
@@ -89,4 +92,8 @@ func Load() Config {
 		StaleSendingAfter: config.Duration("MANAGER_STALE_SENDING_AFTER", 30*time.Minute),
 		SweeperClaimLimit: config.Int("MANAGER_SWEEPER_CLAIM_LIMIT", 1000),
 	}
+	// Default: longer than the audience query timeout, so a legitimately
+	// long audience query is not reported as a stall.
+	cfg.ProcessingStallAfter = config.Duration("MANAGER_PROCESSING_STALL_AFTER", cfg.AudienceQueryTimeout+5*time.Minute)
+	return cfg
 }

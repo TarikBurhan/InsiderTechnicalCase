@@ -25,4 +25,10 @@ var (
 		Name: "panel_http_rate_limited_total",
 		Help: "Requests rejected by the API rate limiter.",
 	}, []string{"tier"})
+
+	// AudienceCalculations counts background audience calculations by result.
+	AudienceCalculations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "panel_audience_calculations_total",
+		Help: "Background audience calculations by result (completed, empty, rejected, timeout, retry).",
+	}, []string{"result"})
 )

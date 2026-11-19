@@ -21,6 +21,7 @@ import (
 	"notifier/manager/publisher"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/healthserver"
 	"notifier/pkg/tracing"
 )
 
@@ -47,13 +48,14 @@ type Processor struct {
 	logs          *repository.LogRepository
 	publisher     *publisher.BatchPublisher
 	cfg           ProcessorConfig
+	watchdog      *healthserver.Watchdog
 	log           *slog.Logger
 }
 
 // NewProcessor creates a processor.
 func NewProcessor(n *repository.NotificationRepository, d *repository.DeliveryRepository, a *repository.AudienceRepository,
-	l *repository.LogRepository, p *publisher.BatchPublisher, cfg ProcessorConfig, log *slog.Logger) *Processor {
-	return &Processor{notifications: n, deliveries: d, audience: a, logs: l, publisher: p, cfg: cfg, log: log}
+	l *repository.LogRepository, p *publisher.BatchPublisher, cfg ProcessorConfig, wd *healthserver.Watchdog, log *slog.Logger) *Processor {
+	return &Processor{notifications: n, deliveries: d, audience: a, logs: l, publisher: p, cfg: cfg, watchdog: wd, log: log}
 }
 
 // Process resolves the audience, writes deliveries batch by batch (<= 100
@@ -71,6 +73,8 @@ func (p *Processor) Process(ctx context.Context, n dto.Notification) {
 
 	metrics.InFlight.Inc()
 	defer metrics.InFlight.Dec()
+	p.watchdog.JobStarted(n.ID, "notification")
+	defer p.watchdog.JobDone(n.ID)
 	start := time.Now()
 
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
@@ -149,6 +153,7 @@ func (p *Processor) produce(ctx context.Context, n dto.Notification) (total, bat
 			span.End()
 		}()
 		ctx := fctx
+		p.watchdog.JobProgress(n.ID)
 		status, err := p.notifications.Status(ctx, n.ID)
 		if err != nil {
 			return err

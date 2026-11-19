@@ -60,6 +60,10 @@ func handleServiceError(w http.ResponseWriter, r *http.Request, log *slog.Logger
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", "request validation failed", details)
 	case errors.Is(err, service.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "not_found", "resource not found", nil)
+	case errors.Is(err, service.ErrAudienceTimeout):
+		writeError(w, r, http.StatusGatewayTimeout, "audience_timeout",
+			"the audience could not be counted within the time limit; the definition is valid. "+
+				"Create the notification instead: it continues counting in the background", nil)
 	case errors.Is(err, service.ErrConflict):
 		writeError(w, r, http.StatusConflict, "conflict", err.Error(), nil)
 	default:

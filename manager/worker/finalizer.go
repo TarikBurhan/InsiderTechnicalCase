@@ -11,6 +11,7 @@ import (
 	"notifier/manager/dto"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/healthserver"
 	"notifier/pkg/tracing"
 )
 
@@ -21,17 +22,18 @@ type Finalizer struct {
 	notifications *repository.NotificationRepository
 	logs          *repository.LogRepository
 	interval      time.Duration
+	watchdog      *healthserver.Watchdog
 	log           *slog.Logger
 }
 
 // NewFinalizer creates the finalizer.
-func NewFinalizer(n *repository.NotificationRepository, l *repository.LogRepository, interval time.Duration, log *slog.Logger) *Finalizer {
-	return &Finalizer{notifications: n, logs: l, interval: interval, log: log}
+func NewFinalizer(n *repository.NotificationRepository, l *repository.LogRepository, interval time.Duration, wd *healthserver.Watchdog, log *slog.Logger) *Finalizer {
+	return &Finalizer{notifications: n, logs: l, interval: interval, watchdog: wd, log: log}
 }
 
 // Run loops until ctx is cancelled.
 func (f *Finalizer) Run(ctx context.Context) {
-	runEvery(ctx, f.interval, func() {
+	runEvery(ctx, f.interval, f.watchdog, loopFinalizer, func() {
 		for _, ch := range dto.Channels {
 			done, err := f.notifications.CompleteFinished(ctx, ch)
 			if err != nil {
