@@ -19,6 +19,7 @@ type Handlers struct {
 	Metrics       *handlers.MetricsHandler
 	WebSocket     *handlers.WebSocketHandler
 	Settings      *handlers.SettingHandler
+	RateLimiter   *RateLimiter
 	ReadyChecks   map[string]healthserver.Check
 }
 
@@ -69,6 +70,10 @@ func NewRouter(h Handlers, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /swagger/openapi.yaml", handlers.OpenAPISpec)
 
 	var handler http.Handler = mux
+	if h.RateLimiter != nil {
+		// Inside Observe so rejected requests are still traced, counted and logged.
+		handler = h.RateLimiter.Middleware(handler)
+	}
 	handler = Observe(log)(handler)
 	handler = Correlation(handler)
 	handler = Recover(log)(handler)

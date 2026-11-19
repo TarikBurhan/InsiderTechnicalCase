@@ -99,6 +99,16 @@ func run(cfg config.Config, log *slog.Logger) error {
 	hub := websocket.NewHub()
 	go websocket.NewListener(pool, hub, log).Run(ctx)
 
+	limiter := server.NewRateLimiter(server.RateLimitConfig{
+		Enabled:    cfg.RateLimitEnabled,
+		ReadRPS:    cfg.RateLimitReadRPS,
+		ReadBurst:  cfg.RateLimitReadBurst,
+		WriteRPS:   cfg.RateLimitWriteRPS,
+		WriteBurst: cfg.RateLimitWriteBurst,
+		TrustProxy: cfg.RateLimitTrustProxy,
+	})
+	go limiter.RunJanitor(ctx)
+
 	paging := handlers.Paging{Default: cfg.DefaultPageSize, Max: cfg.MaxPageSize}
 	router := server.NewRouter(server.Handlers{
 		Notifications: handlers.NewNotificationHandler(notificationSvc, paging, log),
@@ -107,6 +117,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Metrics:       handlers.NewMetricsHandler(metricsSvc, hub, log),
 		WebSocket:     handlers.NewWebSocketHandler(hub, log),
 		Settings:      handlers.NewSettingHandler(settingSvc, log),
+		RateLimiter:   limiter,
 		ReadyChecks: map[string]healthserver.Check{
 			"postgres": pool.Ping,
 			"rabbitmq": mq.Healthy,

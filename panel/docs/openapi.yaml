@@ -9,6 +9,10 @@ info:
 
     Every response carries an `X-Correlation-ID` header (send your own to correlate
     logs and traces across all services).
+
+    Rate limiting (per client IP): write requests (POST/PUT/DELETE under /api/) 5 req/s
+    with burst 10, read requests (GET under /api/, WebSocket) 20 req/s with burst 40.
+    Over the limit the API answers 429 with a Retry-After header.
 servers:
   - url: http://localhost:8080
 tags:
@@ -69,6 +73,7 @@ paths:
                   audience: { type: DIRECT, recipients: ["+905551234567"] }
                   content: { body: "Your code is 1234" }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '201':
           description: Created
           content:
@@ -124,6 +129,7 @@ paths:
                   maxItems: 1000
                   items: { $ref: '#/components/schemas/CreateNotificationRequest' }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '201':
           description: Created
           content:
@@ -176,6 +182,7 @@ paths:
       description: Allowed while NEW, PROCESSING or SENDING. Pending deliveries are cancelled too.
       parameters: [ { $ref: '#/components/parameters/NotificationID' } ]
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '200':
           description: Cancelled
           content:
@@ -240,6 +247,7 @@ paths:
                 channel: { $ref: '#/components/schemas/Channel' }
                 audience: { $ref: '#/components/schemas/Audience' }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '200':
           description: Audience is valid
           content:
@@ -276,6 +284,7 @@ paths:
               type: FILTER
               filter: { conditions: [ { field: city, operator: eq, value: Ankara }, { field: loyalty_tier, operator: eq, value: platinum } ] }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '201':
           description: Created
           content:
@@ -317,6 +326,7 @@ paths:
       tags: [Audiences]
       summary: Delete an audience group
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -344,6 +354,7 @@ paths:
                 data: { type: object }
             example: { name: welcome, body: "Hi {{first_name}}, welcome to {{city}}!" }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '201':
           description: Created
           content:
@@ -386,6 +397,7 @@ paths:
       tags: [Contents]
       summary: Delete a content
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -433,6 +445,7 @@ paths:
               properties:
                 value: { type: string, example: Europe/Istanbul }
       responses:
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '200':
           description: Updated
           content:
@@ -531,6 +544,13 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     NotFound:
       description: Not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    TooManyRequests:
+      description: Rate limit exceeded; retry after the number of seconds in Retry-After
+      headers:
+        Retry-After: { schema: { type: integer } }
+        X-RateLimit-Limit: { schema: { type: integer } }
+        X-RateLimit-Remaining: { schema: { type: integer } }
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     Conflict:
       description: Not allowed in the current state / duplicate

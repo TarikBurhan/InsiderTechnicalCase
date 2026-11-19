@@ -28,6 +28,14 @@ type Config struct {
 	AudienceExtraTables       []string
 	DefaultPageSize           int
 	MaxPageSize               int
+
+	// API rate limiting (per client IP, per tier)
+	RateLimitEnabled    bool
+	RateLimitReadRPS    float64
+	RateLimitReadBurst  int
+	RateLimitWriteRPS   float64
+	RateLimitWriteBurst int
+	RateLimitTrustProxy bool
 }
 
 // Load reads configuration from environment variables.
@@ -60,5 +68,12 @@ func Load() Config {
 		AudienceExtraTables:       config.List("PANEL_AUDIENCE_EXTRA_TABLES", []string{"contact_purchases"}),
 		DefaultPageSize:           config.Int("PANEL_DEFAULT_PAGE_SIZE", 20),
 		MaxPageSize:               config.Int("PANEL_MAX_PAGE_SIZE", 200),
+
+		RateLimitEnabled:    config.Bool("API_RATE_LIMIT_ENABLED", true),
+		RateLimitReadRPS:    config.Float("API_RATE_LIMIT_READ_RPS", 20),
+		RateLimitReadBurst:  config.Int("API_RATE_LIMIT_READ_BURST", 40),
+		RateLimitWriteRPS:   config.Float("API_RATE_LIMIT_WRITE_RPS", 5),
+		RateLimitWriteBurst: config.Int("API_RATE_LIMIT_WRITE_BURST", 10),
+		RateLimitTrustProxy: config.Bool("API_RATE_LIMIT_TRUST_PROXY", false),
 	}
 }

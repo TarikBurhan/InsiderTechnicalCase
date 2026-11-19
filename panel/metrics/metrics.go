@@ -19,4 +19,10 @@ var (
 		Help:    "HTTP request latency.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"route", "method"})
+
+	// RateLimited counts requests rejected with 429 by tier (read / write).
+	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "panel_http_rate_limited_total",
+		Help: "Requests rejected by the API rate limiter.",
+	}, []string{"tier"})
 )
