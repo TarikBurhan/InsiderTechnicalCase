@@ -6,21 +6,36 @@ import "fmt"
 const notificationColumns = `n.id::text, COALESCE(n.correlation_id, ''), n.channel, n.priority, n.status, n.audience_type,
 	n.audience_sql, n.recipients, n.content, n.customized_content, n.processing_attempts, COALESCE(n.trace_context, '')`
 
-// ClaimNewNotifications atomically moves due NEW notifications (scheduled_at
-// reached or not set) to PROCESSING, highest priority / oldest first.
-// FOR UPDATE SKIP LOCKED lets several Manager replicas poll concurrently
-// without ever claiming the same notification twice.
+// ClaimNewNotifications atomically moves due NEW notifications to PROCESSING,
+// highest priority / oldest first. Immediate and scheduled notifications are
+// read through separate partial indexes (idx_notifications_pickup_now and
+// idx_notifications_pickup_scheduled), so scheduled notifications whose
+// scheduled_at is still in the future are never scanned. FOR UPDATE SKIP
+// LOCKED lets several Manager replicas poll concurrently without ever
+// claiming the same notification twice.
 const ClaimNewNotifications = `
-UPDATE notifications n
-SET status = 'PROCESSING', processing_started_at = now(), heartbeat_at = now(),
-    processing_attempts = n.processing_attempts + 1, updated_at = now()
-WHERE n.id IN (
-	SELECT id FROM notifications
-	WHERE status = 'NEW' AND (scheduled_at IS NULL OR scheduled_at <= now())
+WITH immediate AS (
+	SELECT id, priority_rank, created_at FROM notifications
+	WHERE status = 'NEW' AND scheduled_at IS NULL
 	ORDER BY priority_rank, created_at
 	LIMIT $1
 	FOR UPDATE SKIP LOCKED
+), due AS (
+	SELECT id, priority_rank, created_at FROM notifications
+	WHERE status = 'NEW' AND scheduled_at IS NOT NULL AND scheduled_at <= now()
+	ORDER BY scheduled_at
+	LIMIT $1
+	FOR UPDATE SKIP LOCKED
+), picked AS (
+	SELECT id FROM (SELECT * FROM immediate UNION ALL SELECT * FROM due) AS c
+	ORDER BY priority_rank, created_at
+	LIMIT $1
 )
+UPDATE notifications n
+SET status = 'PROCESSING', processing_started_at = now(), heartbeat_at = now(),
+    processing_attempts = n.processing_attempts + 1, updated_at = now()
+FROM picked
+WHERE n.id = picked.id
 RETURNING ` + notificationColumns
 
 // ClaimStaleProcessing takes over PROCESSING notifications whose owner stopped

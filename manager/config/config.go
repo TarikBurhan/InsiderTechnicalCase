@@ -44,6 +44,11 @@ type Config struct {
 
 	// A notification without progress for this long marks the service as stuck.
 	ProcessingStallAfter time.Duration
+
+	// Data retention (0 days = disabled)
+	RetentionDays      int
+	RetentionInterval  time.Duration
+	RetentionBatchSize int
 }
 
 // Load reads configuration from environment variables.
@@ -91,6 +96,10 @@ func Load() Config {
 		SweeperInterval:   config.Duration("MANAGER_SWEEPER_INTERVAL", time.Minute),
 		StaleSendingAfter: config.Duration("MANAGER_STALE_SENDING_AFTER", 30*time.Minute),
 		SweeperClaimLimit: config.Int("MANAGER_SWEEPER_CLAIM_LIMIT", 1000),
+
+		RetentionDays:      config.Int("MANAGER_RETENTION_DAYS", 30),
+		RetentionInterval:  config.Duration("MANAGER_RETENTION_INTERVAL", time.Hour),
+		RetentionBatchSize: config.Int("MANAGER_RETENTION_BATCH_SIZE", 5000),
 	}
 	// Default: longer than the audience query timeout, so a legitimately
 	// long audience query is not reported as a stall.

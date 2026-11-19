@@ -102,6 +102,10 @@ SENDING ──> SENT
    notifications with `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`, which means
    several Manager replicas never claim the same row. Rows come out by `priority`, then
    `created_at`, and only once `scheduled_at <= now()`. A claimed row moves to `PROCESSING`.
+   Immediate and scheduled rows are read through two partial indexes, so notifications
+   scheduled for the future are never scanned (with 100k future rows the poll went from
+   6.6 ms, scanning all of them, to 0.04 ms). When a worker finishes, the Manager polls again
+   right away instead of waiting for the next tick.
 3. Manager streams the audience through a server-side cursor in chunks of 100. For each
    chunk it:
    - writes the delivery rows as `SENDING` (`INSERT … ON CONFLICT DO …`, which is idempotent),
@@ -127,6 +131,7 @@ SENDING ──> SENT
 | **Manager crash** | While processing, the Manager updates a `heartbeat_at` column. At startup, and then every 15s, it reclaims `PROCESSING` rows whose heartbeat is older than 30s, so a Manager that died mid-way is picked up. Re-processing is safe because of the delivery upsert and the sender claim. After `MANAGER_MAX_PROCESSING_ATTEMPTS` (5) attempts the notification becomes `ERROR`. Errors in the audience SQL itself are permanent and fail it immediately. |
 | **Lost / dead-lettered messages** | Each queue has a DLQ. The *sweeper* moves rows stuck in `SENDING` longer than `MANAGER_STALE_SENDING_AFTER` (30m, with no active lease) back to `RETRY`, and this does not use up a retry attempt. |
 | **Cancellation** | `POST /notifications/{id}/cancel` works while the notification is `NEW`, `PROCESSING` or `SENDING`. It cancels pending deliveries in the same transaction. The Manager checks for cancellation before every batch. |
+| **Data retention** | A Manager loop deletes notifications (and their deliveries) that finished more than `MANAGER_RETENTION_DAYS` (730) days ago, and audit logs older than that, in batches of `MANAGER_RETENTION_BATCH_SIZE` (5000) with `SKIP LOCKED`. Notifications still in progress, and their logs, are never deleted. `0` keeps everything. Deleted notifications answer `404`. |
 | **Priority** | Polling orders by priority. The queues are RabbitMQ priority queues (`x-max-priority=10`): high=9, normal=5, low=1. |
 
 ### Audiences
@@ -351,6 +356,8 @@ Migrations are versioned SQL files in `migrations/`. The `migrate` container app
   which keep the distributed trace across the database hop.
 - `000005_audience_calculating`: the `AUDIENCE_CALCULATING` status and
   `notifications.audience_count`.
+- `000006_retention_and_pickup_indexes`: separate polling indexes for immediate and scheduled
+  notifications, and the index used by data retention.
 
 `deploy/postgres/init` creates the `audience_reader` role on the first start of the
 database. Its password comes from `.env`.
@@ -371,6 +378,8 @@ is git-ignored; `.env.example` is the template. Main settings:
 | `MANAGER_WORKERS` | 4 | Notifications processed in parallel per Manager |
 | `MANAGER_STALE_PROCESSING_AFTER` | 30s | Heartbeat age after which `PROCESSING` work is recovered |
 | `MANAGER_STALE_SENDING_AFTER` | 30m | Age after which stuck `SENDING` deliveries are swept |
+| `MANAGER_RETENTION_DAYS` | 730 | Delete finished notifications, their deliveries and old logs after this many days (0 = never) |
+| `MANAGER_RETENTION_INTERVAL` / `_BATCH_SIZE` | 1h / 5000 | How often retention runs / rows per delete statement |
 | `MANAGER_PROCESSING_STALL_AFTER` | audience timeout + 5m | A notification without progress this long marks the Manager as stuck |
 | `PANEL_AUDIENCE_VALIDATION_TIMEOUT` | 10s | Synchronous audience counting budget per API request |
 | `PANEL_AUDIENCE_BACKGROUND_TIMEOUT` | 30m | Max duration of a background audience count |

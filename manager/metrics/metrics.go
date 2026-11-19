@@ -44,6 +44,12 @@ var (
 		Help: "Deliveries stuck in SENDING moved back to RETRY.",
 	}, []string{"channel"})
 
+	// RetentionDeleted counts rows removed by data retention, by table.
+	RetentionDeleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "manager_retention_deleted_total",
+		Help: "Rows deleted by data retention by table.",
+	}, []string{"table"})
+
 	// InFlight is the number of notifications currently being processed.
 	InFlight = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "manager_notifications_in_flight",

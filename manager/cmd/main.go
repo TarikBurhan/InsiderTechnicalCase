@@ -94,6 +94,11 @@ func run(cfg config.Config, log *slog.Logger) error {
 	retries := worker.NewRetryScheduler(notifications, deliveries, logs, batchPublisher,
 		cfg.RetryPollInterval, cfg.RetryClaimLimit, cfg.BatchSize, watchdog, log)
 	finalizer := worker.NewFinalizer(notifications, logs, cfg.FinalizerInterval, watchdog, log)
+	retention := worker.NewRetention(repository.NewRetentionRepository(pool), worker.RetentionConfig{
+		Days:      cfg.RetentionDays,
+		Interval:  cfg.RetentionInterval,
+		BatchSize: cfg.RetentionBatchSize,
+	}, watchdog, log)
 	sweeper := worker.NewSweeper(deliveries, logs, cfg.SweeperInterval, cfg.StaleSendingAfter, cfg.SweeperClaimLimit, watchdog, log)
 
 	// Every loop runs in its own goroutine so none of them blocks another.
@@ -110,6 +115,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	start(retries.Run)
 	start(finalizer.Run)
 	start(sweeper.Run)
+	start(retention.Run)
 	start(func(ctx context.Context) {
 		healthserver.RunWithLiveness(ctx, ":"+cfg.HealthPort, cfg.ServiceName, map[string]healthserver.Check{
 			"postgres": pool.Ping,
