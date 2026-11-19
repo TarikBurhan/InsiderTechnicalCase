@@ -1,0 +1,769 @@
+openapi: 3.0.3
+info:
+  title: Notification Panel API
+  version: 1.0.0
+  description: |
+    Event-driven notification system. Requests are validated and stored as `NEW`;
+    the Manager service processes them asynchronously
+    (`NEW -> PROCESSING -> SENDING -> COMPLETE`, or `ERROR` / `CANCELLED`).
+
+    Every response carries an `X-Correlation-ID` header (send your own to correlate
+    logs and traces across all services).
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Notifications
+  - name: Audiences
+  - name: Contents
+  - name: Settings
+  - name: Observability
+
+paths:
+  /api/v1/notifications:
+    post:
+      tags: [Notifications]
+      summary: Create a notification request
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string, maxLength: 255 }
+          description: Alternative to the `idempotency_key` body field. Re-using a key returns the original notification with 200.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateNotificationRequest' }
+            examples:
+              sql:
+                summary: Raw SQL audience
+                value:
+                  channel: sms
+                  priority: high
+                  audience: { type: SQL, sql: "SELECT id FROM master_contact WHERE city = 'Istanbul'" }
+                  content: { body: "Flash sale started!" }
+              filter_customized:
+                summary: Filter audience with personalised content
+                value:
+                  channel: email
+                  audience:
+                    type: FILTER
+                    filter:
+                      table: contact_purchases
+                      conditions:
+                        - { field: contact_purchases.amount, operator: gte, value: 500 }
+                        - { field: city, operator: in, value: [Ankara, Izmir] }
+                  content: { subject: "Hi {{first_name}}", body: "<p>Dear {{first_name|Customer}}</p>", is_html: true }
+                  customized_content: true
+              group:
+                summary: Saved audience group + stored content, scheduled
+                value:
+                  channel: push
+                  priority: low
+                  scheduled_at: "2030-01-01T09:00:00Z"
+                  audience: { type: GROUP, group_id: 1 }
+                  content_id: 1
+              direct:
+                summary: Explicit recipients
+                value:
+                  channel: sms
+                  audience: { type: DIRECT, recipients: ["+905551234567"] }
+                  content: { body: "Your code is 1234" }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateNotificationResponse' }
+        '200':
+          description: Idempotency key already used, original notification returned (`duplicate=true`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateNotificationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    get:
+      tags: [Notifications]
+      summary: List notifications with filters and pagination
+      parameters:
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/NotificationStatus' } }
+        - { in: query, name: channel, schema: { $ref: '#/components/schemas/Channel' } }
+        - { in: query, name: priority, schema: { $ref: '#/components/schemas/Priority' } }
+        - { in: query, name: batch_id, schema: { type: string, format: uuid } }
+        - { in: query, name: from, schema: { type: string }, description: "created_at >= from (RFC3339 or local account time)" }
+        - { in: query, name: to, schema: { type: string }, description: "created_at <= to (RFC3339 or local account time)" }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/notifications/batch:
+    post:
+      tags: [Notifications]
+      summary: Create up to 1000 notifications in one request
+      description: All items are validated first (all-or-nothing) and inserted in a single transaction sharing one `batch_id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notifications]
+              properties:
+                notifications:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items: { $ref: '#/components/schemas/CreateNotificationRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id: { type: string, format: uuid }
+                  count: { type: integer }
+                  notifications: { type: array, items: { $ref: '#/components/schemas/CreateNotificationResponse' } }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/v1/batches/{batchId}:
+    get:
+      tags: [Notifications]
+      summary: Status of every notification in a batch
+      parameters:
+        - { in: path, name: batchId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Batch status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id: { type: string, format: uuid }
+                  total: { type: integer }
+                  status_counts: { type: object, additionalProperties: { type: integer } }
+                  notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/notifications/{id}:
+    get:
+      tags: [Notifications]
+      summary: Notification status with delivery statistics
+      parameters: [ { $ref: '#/components/parameters/NotificationID' } ]
+      responses:
+        '200':
+          description: Notification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/notifications/{id}/cancel:
+    post:
+      tags: [Notifications]
+      summary: Cancel a pending notification
+      description: Allowed while NEW, PROCESSING or SENDING. Pending deliveries are cancelled too.
+      parameters: [ { $ref: '#/components/parameters/NotificationID' } ]
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/notifications/{id}/deliveries:
+    get:
+      tags: [Notifications]
+      summary: Per-recipient deliveries of a notification
+      parameters:
+        - $ref: '#/components/parameters/NotificationID'
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/DeliveryStatus' } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Delivery' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/notifications/{id}/logs:
+    get:
+      tags: [Notifications]
+      summary: Audit log of a notification (written by every service)
+      parameters:
+        - $ref: '#/components/parameters/NotificationID'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/LogEntry' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/audiences/validate:
+    post:
+      tags: [Audiences]
+      summary: Dry-run an audience definition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, audience]
+              properties:
+                channel: { $ref: '#/components/schemas/Channel' }
+                audience: { $ref: '#/components/schemas/Audience' }
+      responses:
+        '200':
+          description: Audience is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  type: { type: string }
+                  count: { type: integer, description: Matching master_contact rows }
+                  resolved_sql: { type: string }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/v1/audience-groups:
+    post:
+      tags: [Audiences]
+      summary: Save a validated audience group
+      description: The SQL / filter is validated once here; notifications using the group are not re-validated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name: { type: string, maxLength: 100 }
+                description: { type: string }
+                type: { type: string, enum: [SQL, FILTER] }
+                sql: { type: string }
+                filter: { $ref: '#/components/schemas/AudienceFilter' }
+            example:
+              name: ankara-platinum
+              type: FILTER
+              filter: { conditions: [ { field: city, operator: eq, value: Ankara }, { field: loyalty_tier, operator: eq, value: platinum } ] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AudienceGroup' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    get:
+      tags: [Audiences]
+      summary: List audience groups
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AudienceGroup' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+
+  /api/v1/audience-groups/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [Audiences]
+      summary: Get an audience group
+      responses:
+        '200':
+          description: Group
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AudienceGroup' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Audiences]
+      summary: Delete an audience group
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/contents/{channel}:
+    parameters:
+      - { in: path, name: channel, required: true, schema: { $ref: '#/components/schemas/Channel' } }
+    post:
+      tags: [Contents]
+      summary: Save a validated content / template
+      description: Variables (`{{column}}` or `{{column|default}}`) must be master_contact columns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, body]
+              properties:
+                name: { type: string, maxLength: 100 }
+                subject: { type: string, description: Required for email }
+                title: { type: string, description: Required for push }
+                body: { type: string }
+                is_html: { type: boolean }
+                image_url: { type: string }
+                data: { type: object }
+            example: { name: welcome, body: "Hi {{first_name}}, welcome to {{city}}!" }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Content' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    get:
+      tags: [Contents]
+      summary: List contents of a channel
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of contents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Content' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+
+  /api/v1/contents/{channel}/{id}:
+    parameters:
+      - { in: path, name: channel, required: true, schema: { $ref: '#/components/schemas/Channel' } }
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [Contents]
+      summary: Get a content
+      responses:
+        '200':
+          description: Content
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Content' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Contents]
+      summary: Delete a content
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/settings:
+    get:
+      tags: [Settings]
+      summary: List account settings (key/value)
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Setting' } }
+
+  /api/v1/settings/{key}:
+    parameters:
+      - { in: path, name: key, required: true, schema: { type: string, example: timezone } }
+    get:
+      tags: [Settings]
+      summary: Get an account setting
+      responses:
+        '200':
+          description: Setting
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Setting' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Settings]
+      summary: Update an account setting
+      description: |
+        Only `timezone` is writable. The value must be an IANA zone known to PostgreSQL.
+        The database default is updated immediately; every service re-reads the setting
+        every TIMEZONE_WATCH_INTERVAL (30s) and restarts to apply it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string, example: Europe/Istanbul }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Setting'
+                  - type: object
+                    properties:
+                      note: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/v1/system/time:
+    get:
+      tags: [Settings]
+      summary: Check how the account time zone is applied
+      description: Compares the account zone with the service, the container TZ, the database default and session zones, and the clock drift.
+      responses:
+        '200':
+          description: Time status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimeStatus' }
+
+  /api/v1/metrics:
+    get:
+      tags: [Observability]
+      summary: Real-time metrics (queue depth, success/failure rates, latency)
+      parameters:
+        - { in: query, name: window, schema: { type: integer, default: 300 }, description: Window in seconds }
+      responses:
+        '200':
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Metrics' }
+
+  /metrics:
+    get:
+      tags: [Observability]
+      summary: Prometheus metrics
+      responses:
+        '200': { description: Prometheus exposition format, content: { text/plain: { schema: { type: string } } } }
+
+  /health:
+    get:
+      tags: [Observability]
+      summary: Liveness probe
+      responses:
+        '200': { description: Alive }
+
+  /ready:
+    get:
+      tags: [Observability]
+      summary: Readiness probe (PostgreSQL, RabbitMQ, time zone)
+      responses:
+        '200': { description: Ready }
+        '503': { description: A dependency is down }
+
+  /ws/notifications:
+    get:
+      tags: [Observability]
+      summary: WebSocket stream of real-time status changes
+      description: |
+        Upgrade to WebSocket. Optional filters `notification_id` / `batch_id`.
+        Messages: `{"type":"notification.status","data":{"id":"...","status":"SENDING",...}}`
+      parameters:
+        - { in: query, name: notification_id, schema: { type: string, format: uuid } }
+        - { in: query, name: batch_id, schema: { type: string, format: uuid } }
+      responses:
+        '101': { description: Switching protocols }
+
+components:
+  parameters:
+    NotificationID:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      in: query
+      name: page
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      in: query
+      name: page_size
+      schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ValidationFailed:
+      description: Validation failed
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Not allowed in the current state / duplicate
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    Channel: { type: string, enum: [sms, email, push] }
+    Priority: { type: string, enum: [high, normal, low], default: normal }
+    NotificationStatus: { type: string, enum: [NEW, PROCESSING, SENDING, COMPLETE, ERROR, CANCELLED] }
+    DeliveryStatus: { type: string, enum: [SENDING, SENT, RETRY, ERROR, CANCELLED] }
+
+    CreateNotificationRequest:
+      type: object
+      required: [channel, audience]
+      properties:
+        channel: { $ref: '#/components/schemas/Channel' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        idempotency_key: { type: string, maxLength: 255 }
+        scheduled_at: { type: string, example: "2026-11-20 09:00", description: "Deliver in the future. RFC3339 with offset, or a local date-time without offset (YYYY-MM-DDTHH:MM[:SS] or 'YYYY-MM-DD HH:MM') read in the account time zone" }
+        audience: { $ref: '#/components/schemas/Audience' }
+        content_id: { type: integer, format: int64, description: Stored content of the same channel (use instead of content) }
+        content: { $ref: '#/components/schemas/ContentPayload' }
+        customized_content: { type: boolean, description: "Content contains {{variables}} and is personalised by the Customizer" }
+
+    Audience:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [SQL, FILTER, GROUP, DIRECT] }
+        sql: { type: string, description: "SQL: single SELECT returning an `id` column of master_contact" }
+        filter: { $ref: '#/components/schemas/AudienceFilter' }
+        group_id: { type: integer, format: int64 }
+        recipients: { type: array, items: { type: string }, description: "DIRECT: E.164 phones / emails / device tokens" }
+
+    AudienceFilter:
+      type: object
+      properties:
+        table: { type: string, description: Optional whitelisted table with a contact_id column to join }
+        match: { type: string, enum: [all, any], default: all }
+        conditions:
+          type: array
+          items:
+            type: object
+            required: [field, operator]
+            properties:
+              field: { type: string, example: city, description: "`column` (master_contact) or `table.column`" }
+              operator: { type: string, enum: [eq, neq, gt, gte, lt, lte, like, ilike, in, not_in, between, is_null, is_not_null] }
+              value: { description: "Scalar, or array for in / not_in / between" }
+
+    ContentPayload:
+      type: object
+      required: [body]
+      properties:
+        subject: { type: string, maxLength: 255, description: Email only (required) }
+        title: { type: string, maxLength: 100, description: Push only (required) }
+        body: { type: string, description: "SMS <= 480 chars, push <= 500 chars, email <= 100k chars" }
+        is_html: { type: boolean }
+        image_url: { type: string }
+        data: { type: object }
+
+    DeliveryStats:
+      type: object
+      properties:
+        total: { type: integer }
+        sending: { type: integer }
+        sent: { type: integer }
+        retry: { type: integer }
+        error: { type: integer }
+        cancelled: { type: integer }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        batch_id: { type: string, format: uuid }
+        idempotency_key: { type: string }
+        correlation_id: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        status: { $ref: '#/components/schemas/NotificationStatus' }
+        audience_type: { type: string }
+        audience_group_id: { type: integer }
+        content_id: { type: integer }
+        content: { $ref: '#/components/schemas/ContentPayload' }
+        customized_content: { type: boolean }
+        scheduled_at: { type: string, format: date-time }
+        total_recipients: { type: integer }
+        error_message: { type: string }
+        stats: { $ref: '#/components/schemas/DeliveryStats' }
+        processing_started_at: { type: string, format: date-time }
+        sending_started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateNotificationResponse:
+      allOf:
+        - $ref: '#/components/schemas/Notification'
+        - type: object
+          properties:
+            duplicate: { type: boolean }
+            audience_count: { type: integer }
+
+    Delivery:
+      type: object
+      properties:
+        id: { type: integer }
+        contact_id: { type: integer }
+        recipient: { type: string }
+        batch_no: { type: integer }
+        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        retry_count: { type: integer }
+        next_retry_at: { type: string, format: date-time }
+        provider_message_id: { type: string }
+        last_error: { type: string }
+        sent_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    LogEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        delivery_id: { type: integer }
+        channel: { type: string }
+        service: { type: string, example: manager }
+        level: { type: string, enum: [DEBUG, INFO, WARN, ERROR] }
+        event: { type: string, example: BATCH_PRODUCED }
+        message: { type: string }
+        correlation_id: { type: string }
+        details: { type: object }
+        created_at: { type: string, format: date-time }
+
+    AudienceGroup:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        source_type: { type: string, enum: [SQL, FILTER] }
+        definition: { type: object }
+        sql_query: { type: string }
+        contact_count: { type: integer }
+        validated_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    Content:
+      type: object
+      properties:
+        id: { type: integer }
+        channel: { $ref: '#/components/schemas/Channel' }
+        name: { type: string }
+        subject: { type: string }
+        title: { type: string }
+        body: { type: string }
+        is_html: { type: boolean }
+        image_url: { type: string }
+        data: { type: object }
+        variables: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Metrics:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        window_seconds: { type: integer }
+        queues:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              depth: { type: integer }
+              consumers: { type: integer }
+        channels:
+          type: array
+          items:
+            type: object
+            properties:
+              channel: { type: string }
+              sent: { type: integer }
+              failed: { type: integer }
+              retrying: { type: integer }
+              in_flight: { type: integer }
+              success_rate: { type: number }
+              failure_rate: { type: number }
+              avg_latency_ms: { type: number }
+              p95_latency_ms: { type: number }
+        notifications_by_status: { type: object, additionalProperties: { type: integer } }
+        websocket: { type: object, additionalProperties: { type: integer } }
+
+    Setting:
+      type: object
+      properties:
+        key: { type: string }
+        value: { type: string }
+        description: { type: string }
+        updated_at: { type: string, format: date-time }
+
+    TimeStatus:
+      type: object
+      properties:
+        account_timezone: { type: string }
+        service_timezone: { type: string }
+        container_tz: { type: string }
+        database_timezone: { type: string }
+        database_session_timezone: { type: string }
+        service_now: { type: string, format: date-time }
+        database_now: { type: string, format: date-time }
+        clock_drift_ms: { type: integer }
+        consistent: { type: boolean }
+        problems: { type: array, items: { type: string } }
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string, example: validation_failed }
+        message: { type: string }
+        correlation_id: { type: string }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
