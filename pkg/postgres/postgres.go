@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"notifier/pkg/tracing"
 )
 
 // DSN builds a postgres connection url.
@@ -47,6 +49,8 @@ func NewPool(ctx context.Context, dsn string, opts Options, log *slog.Logger) (*
 	if opts.ApplicationName != "" {
 		cfg.ConnConfig.RuntimeParams["application_name"] = opts.ApplicationName
 	}
+	// Every SQL statement inside a traced request becomes a span.
+	cfg.ConnConfig.Tracer = tracing.NewPgxTracer()
 	if opts.AfterConnect != nil {
 		cfg.AfterConnect = opts.AfterConnect
 	}

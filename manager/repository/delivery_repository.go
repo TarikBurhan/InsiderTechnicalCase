@@ -104,7 +104,7 @@ func (r *DeliveryRepository) SweepStale(ctx context.Context, channel string, sta
 	var out []dto.SweptDelivery
 	for rows.Next() {
 		var s dto.SweptDelivery
-		if err := rows.Scan(&s.DeliveryID, &s.NotificationID); err != nil {
+		if err := rows.Scan(&s.DeliveryID, &s.NotificationID, &s.TraceContext); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

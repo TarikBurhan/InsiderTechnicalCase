@@ -21,6 +21,7 @@ import (
 	"notifier/manager/publisher"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 )
 
 var errCancelled = errors.New("notification cancelled")
@@ -61,8 +62,11 @@ func NewProcessor(n *repository.NotificationRepository, d *repository.DeliveryRe
 // picks it up again; permanent failures move it to ERROR.
 func (p *Processor) Process(ctx context.Context, n dto.Notification) {
 	ctx = correlation.WithID(ctx, n.CorrelationID)
+	// Continue the trace of the API request that created the notification.
+	ctx = tracing.FromCarrier(ctx, n.TraceContext)
 	ctx, span := otel.Tracer("manager").Start(ctx, "manager.process_notification")
-	span.SetAttributes(attribute.String("notification.id", n.ID), attribute.String("notification.channel", n.Channel))
+	span.SetAttributes(attribute.String("notification.id", n.ID), attribute.String("notification.channel", n.Channel),
+		attribute.Int("notification.processing_attempt", n.ProcessingAttempts))
 	defer span.End()
 
 	metrics.InFlight.Inc()
@@ -135,7 +139,16 @@ func (p *Processor) produce(ctx context.Context, n dto.Notification) (total, bat
 		return 0, 0, permanentError{fmt.Errorf("invalid content: %w", err)}
 	}
 
-	flush := func(contacts []dto.AudienceContact) error {
+	flush := func(contacts []dto.AudienceContact) (err error) {
+		fctx, span := tracing.StartChild(ctx, "manager.produce_batch")
+		span.SetAttributes(attribute.Int("batch.no", batches+1), attribute.Int("batch.size", len(contacts)))
+		defer func() {
+			if err != nil {
+				span.RecordError(err)
+			}
+			span.End()
+		}()
+		ctx := fctx
 		status, err := p.notifications.Status(ctx, n.ID)
 		if err != nil {
 			return err

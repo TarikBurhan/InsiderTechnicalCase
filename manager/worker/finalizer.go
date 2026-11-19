@@ -5,9 +5,13 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"notifier/manager/dto"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 )
 
 // Finalizer is the safety net that moves SENDING notifications to COMPLETE
@@ -37,9 +41,12 @@ func (f *Finalizer) Run(ctx context.Context) {
 				continue
 			}
 			for _, c := range done {
-				cctx := correlation.WithID(ctx, c.CorrelationID)
+				cctx := tracing.FromCarrier(correlation.WithID(ctx, c.CorrelationID), c.TraceContext)
+				cctx, span := otel.Tracer("manager").Start(cctx, "manager.complete_notification")
+				span.SetAttributes(attribute.String("notification.id", c.ID), attribute.String("completed_by", "finalizer"))
 				f.log.InfoContext(cctx, "notification completed", slog.String("notification_id", c.ID))
 				_ = f.logs.Write(cctx, c.ID, ch, dto.LevelInfo, "COMPLETED", "all deliveries finished", nil)
+				span.End()
 			}
 		}
 	})

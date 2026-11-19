@@ -28,7 +28,7 @@ func collectNotifications(rows pgx.Rows) ([]dto.Notification, error) {
 	for rows.Next() {
 		var n dto.Notification
 		if err := rows.Scan(&n.ID, &n.CorrelationID, &n.Channel, &n.Priority, &n.Status, &n.AudienceType,
-			&n.AudienceSQL, &n.Recipients, &n.Content, &n.CustomizedContent, &n.ProcessingAttempts); err != nil {
+			&n.AudienceSQL, &n.Recipients, &n.Content, &n.CustomizedContent, &n.ProcessingAttempts, &n.TraceContext); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -120,7 +120,7 @@ func (r *NotificationRepository) CompleteFinished(ctx context.Context, channel s
 	var out []dto.CompletedNotification
 	for rows.Next() {
 		var c dto.CompletedNotification
-		if err := rows.Scan(&c.ID, &c.CorrelationID); err != nil {
+		if err := rows.Scan(&c.ID, &c.CorrelationID, &c.TraceContext); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

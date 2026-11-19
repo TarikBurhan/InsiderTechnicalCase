@@ -24,4 +24,5 @@ type RetryDelivery struct {
 type SweptDelivery struct {
 	DeliveryID     int64
 	NotificationID string
+	TraceContext   string
 }

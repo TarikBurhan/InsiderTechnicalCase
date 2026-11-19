@@ -12,9 +12,13 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 	"notifier/smssender/request"
 	"notifier/smssender/response"
 )
@@ -62,8 +66,22 @@ func NewClient(url string, timeout time.Duration) *Client {
 
 // Send posts one message. idempotencyKey lets the provider de-duplicate
 // retries of the same delivery attempt.
-func (c *Client) Send(ctx context.Context, req request.ProviderRequest, idempotencyKey string) (response.ProviderResponse, error) {
-	var out response.ProviderResponse
+func (c *Client) Send(ctx context.Context, req request.ProviderRequest, idempotencyKey string) (out response.ProviderResponse, err error) {
+	// Client span per provider call; its context goes out in traceparent.
+	ctx, span := tracing.StartChild(ctx, "provider.send", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("http.request.method", http.MethodPost),
+			attribute.String("messaging.channel", req.Channel),
+			attribute.String("provider.idempotency_key", idempotencyKey)))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.Bool("provider.retryable", !IsPermanent(err)))
+		} else {
+			span.SetAttributes(attribute.String("provider.message_id", out.MessageID))
+		}
+		span.End()
+	}()
 	body, err := json.Marshal(req)
 	if err != nil {
 		return out, &SendError{Message: err.Error()}
@@ -84,6 +102,7 @@ func (c *Client) Send(ctx context.Context, req request.ProviderRequest, idempote
 		return out, &SendError{Retryable: true, Message: err.Error()}
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {

@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+
+	"notifier/pkg/tracing"
 )
 
 // Limiter grants message "tokens" for a key (one key per channel).
@@ -36,14 +39,20 @@ func (l *Limiter) Acquire(ctx context.Context, n int) (int, error) {
 	if n > l.limit {
 		n = l.limit
 	}
+	ctx, span := tracing.StartChild(ctx, "ratelimit.acquire")
+	span.SetAttributes(attribute.String("ratelimit.key", l.key), attribute.Int("ratelimit.requested", n))
+	defer span.End()
+	waits := 0
 	for {
 		var granted int
 		if err := l.pool.QueryRow(ctx, AcquireTokensQuery, l.key, n, l.limit).Scan(&granted); err != nil {
 			return 0, fmt.Errorf("acquire rate tokens: %w", err)
 		}
 		if granted > 0 {
+			span.SetAttributes(attribute.Int("ratelimit.granted", granted), attribute.Int("ratelimit.waits", waits))
 			return granted, nil
 		}
+		waits++
 		// Window is exhausted: wait until the next second starts.
 		wait := time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 5*time.Millisecond
 		select {

@@ -13,15 +13,15 @@ import (
 const NotificationColumns = `id::text, batch_id::text, idempotency_key, correlation_id, channel, priority, status,
 	audience_type, audience_group_id, audience_definition, audience_sql, recipients, content_id, content,
 	customized_content, scheduled_at, total_recipients, error_message, processing_started_at,
-	sending_started_at, completed_at, cancelled_at, created_at, updated_at`
+	sending_started_at, completed_at, cancelled_at, created_at, updated_at, COALESCE(trace_context, '')`
 
 // InsertNotification inserts a NEW notification. When an idempotency key is
 // reused nothing is inserted and no row is returned.
 const InsertNotification = `
 INSERT INTO notifications (
 	batch_id, idempotency_key, correlation_id, channel, priority, audience_type, audience_group_id,
-	audience_definition, audience_sql, recipients, content_id, content, customized_content, scheduled_at
-) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	audience_definition, audience_sql, recipients, content_id, content, customized_content, scheduled_at, trace_context
+) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, ''))
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING ` + NotificationColumns
 

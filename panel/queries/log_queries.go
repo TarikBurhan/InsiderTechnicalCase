@@ -2,12 +2,12 @@ package queries
 
 // InsertLog writes an event to notification_logs.
 const InsertLog = `
-INSERT INTO notification_logs (notification_id, channel, service, level, event, message, correlation_id, details)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)`
+INSERT INTO notification_logs (notification_id, channel, service, level, event, message, correlation_id, details, trace_id)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''))`
 
 // ListLogs pages through the logs of a notification.
 const ListLogs = `
-SELECT id, notification_id::text, delivery_id, channel, service, level, event, message, correlation_id, details, created_at
+SELECT id, notification_id::text, delivery_id, channel, service, level, event, message, correlation_id, trace_id, details, created_at
 FROM notification_logs
 WHERE notification_id = $1::uuid
 ORDER BY created_at, id

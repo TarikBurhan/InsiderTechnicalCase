@@ -9,6 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"notifier/pkg/tracing"
 )
 
 // Publisher publishes persistent messages with publisher confirms, so a
@@ -41,7 +46,21 @@ func (p *Publisher) channel() (*amqp.Channel, error) {
 
 // Publish sends body to the notifications exchange with the given routing
 // key and priority. It retries a few times on channel/connection failures.
-func (p *Publisher) Publish(ctx context.Context, routingKey string, body []byte, priority uint8) error {
+func (p *Publisher) Publish(ctx context.Context, routingKey string, body []byte, priority uint8) (err error) {
+	// Producer span: its context is injected into the message headers, so
+	// the consumer span becomes its child.
+	ctx, span := tracing.StartChild(ctx, "publish "+routingKey, trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", routingKey),
+			attribute.Int("messaging.message.body.size", len(body)),
+			attribute.Int("messaging.rabbitmq.priority", int(priority))))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {

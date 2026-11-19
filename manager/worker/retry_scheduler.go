@@ -7,11 +7,15 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"notifier/manager/dto"
 	"notifier/manager/metrics"
 	"notifier/manager/publisher"
 	"notifier/manager/repository"
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 )
 
 // RetryScheduler re-produces deliveries in RETRY whose next_retry_at has
@@ -86,33 +90,45 @@ func (s *RetryScheduler) produce(ctx context.Context, channel string, due []dto.
 			}
 			continue
 		}
-		nctx := correlation.WithID(ctx, n.CorrelationID)
-		var content dto.MessageContent
-		if err := json.Unmarshal(n.Content, &content); err != nil {
-			s.log.ErrorContext(nctx, "invalid notification content", slog.Any("error", err))
+		s.retryNotification(ctx, channel, n, items)
+	}
+}
+
+// retryNotification re-produces the due deliveries of one notification as
+// part of the notification's original trace.
+func (s *RetryScheduler) retryNotification(ctx context.Context, channel string, n dto.Notification, items []dto.RetryDelivery) {
+	nctx := tracing.FromCarrier(correlation.WithID(ctx, n.CorrelationID), n.TraceContext)
+	nctx, span := otel.Tracer("manager").Start(nctx, "manager.schedule_retry")
+	span.SetAttributes(attribute.String("notification.id", n.ID), attribute.String("notification.channel", channel),
+		attribute.Int("retry.deliveries", len(items)))
+	defer span.End()
+
+	var content dto.MessageContent
+	if err := json.Unmarshal(n.Content, &content); err != nil {
+		span.RecordError(err)
+		s.log.ErrorContext(nctx, "invalid notification content", slog.Any("error", err))
+		return
+	}
+	for _, chunk := range publisher.Chunk(items, s.batchSize) {
+		targets := make([]dto.DeliveryTarget, len(chunk))
+		attempt := 0
+		for i, d := range chunk {
+			targets[i] = d.DeliveryTarget
+			if d.RetryCount+1 > attempt {
+				attempt = d.RetryCount + 1
+			}
+		}
+		if _, err := s.publisher.Publish(nctx, publisher.Batch{Notification: n, Content: content, Attempt: attempt, Targets: targets}); err != nil {
+			span.RecordError(err)
+			s.log.ErrorContext(nctx, "publishing retry batch failed, rescheduling", slog.Any("error", err))
+			_ = s.deliveries.Reschedule(nctx, channel, idsOf(chunk), time.Minute)
 			continue
 		}
-
-		for _, chunk := range publisher.Chunk(items, s.batchSize) {
-			targets := make([]dto.DeliveryTarget, len(chunk))
-			attempt := 0
-			for i, d := range chunk {
-				targets[i] = d.DeliveryTarget
-				if d.RetryCount+1 > attempt {
-					attempt = d.RetryCount + 1
-				}
-			}
-			if _, err := s.publisher.Publish(nctx, publisher.Batch{Notification: n, Content: content, Attempt: attempt, Targets: targets}); err != nil {
-				s.log.ErrorContext(nctx, "publishing retry batch failed, rescheduling", slog.Any("error", err))
-				_ = s.deliveries.Reschedule(ctx, channel, idsOf(chunk), time.Minute)
-				continue
-			}
-			metrics.RetriesScheduled.WithLabelValues(channel).Add(float64(len(chunk)))
-		}
-		if err := s.logs.Write(nctx, n.ID, channel, dto.LevelInfo, "RETRY_SCHEDULED",
-			fmt.Sprintf("%d deliveries re-produced for retry", len(items)), map[string]any{"count": len(items)}); err != nil {
-			s.log.WarnContext(nctx, "could not write log", slog.Any("error", err))
-		}
+		metrics.RetriesScheduled.WithLabelValues(channel).Add(float64(len(chunk)))
+	}
+	if err := s.logs.Write(nctx, n.ID, channel, dto.LevelInfo, "RETRY_SCHEDULED",
+		fmt.Sprintf("%d deliveries re-produced for retry", len(items)), map[string]any{"count": len(items)}); err != nil {
+		s.log.WarnContext(nctx, "could not write log", slog.Any("error", err))
 	}
 }
 

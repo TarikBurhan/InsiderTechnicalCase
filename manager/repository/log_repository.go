@@ -8,6 +8,7 @@ import (
 
 	"notifier/manager/queries"
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 )
 
 // LogRepository writes notification_logs entries.
@@ -32,6 +33,6 @@ func (r *LogRepository) Write(ctx context.Context, notificationID, channel, leve
 		raw = b
 	}
 	_, err := r.pool.Exec(ctx, queries.InsertLog, notificationID, channel, r.service, level, event, message,
-		correlation.FromContext(ctx), raw)
+		correlation.FromContext(ctx), raw, tracing.TraceID(ctx))
 	return err
 }

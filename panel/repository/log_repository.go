@@ -8,6 +8,7 @@ import (
 
 	"notifier/panel/dto"
 	"notifier/panel/queries"
+	"notifier/pkg/tracing"
 )
 
 // LogRepository writes and reads notification_logs.
@@ -31,7 +32,7 @@ func (r *LogRepository) Write(ctx context.Context, notificationID *string, chann
 		}
 		raw = b
 	}
-	_, err := r.pool.Exec(ctx, queries.InsertLog, notificationID, channel, r.service, level, event, message, correlationID, raw)
+	_, err := r.pool.Exec(ctx, queries.InsertLog, notificationID, channel, r.service, level, event, message, correlationID, raw, tracing.TraceID(ctx))
 	return err
 }
 
@@ -50,7 +51,7 @@ func (r *LogRepository) List(ctx context.Context, notificationID string, limit, 
 	for rows.Next() {
 		var l dto.NotificationLog
 		if err := rows.Scan(&l.ID, &l.NotificationID, &l.DeliveryID, &l.Channel, &l.Service, &l.Level, &l.Event,
-			&l.Message, &l.CorrelationID, &l.Details, &l.CreatedAt); err != nil {
+			&l.Message, &l.CorrelationID, &l.TraceID, &l.Details, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, l)

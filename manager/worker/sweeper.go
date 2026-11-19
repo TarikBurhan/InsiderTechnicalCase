@@ -6,9 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"notifier/manager/dto"
 	"notifier/manager/metrics"
 	"notifier/manager/repository"
+	"notifier/pkg/tracing"
 )
 
 // Sweeper recovers deliveries stuck in SENDING for too long (queue message
@@ -46,13 +50,18 @@ func (s *Sweeper) Run(ctx context.Context) {
 			}
 			metrics.StaleSwept.WithLabelValues(ch).Add(float64(len(swept)))
 			perNotification := map[string]int{}
+			traceOf := map[string]string{}
 			for _, d := range swept {
 				perNotification[d.NotificationID]++
+				traceOf[d.NotificationID] = d.TraceContext
 			}
 			for nid, count := range perNotification {
-				s.log.Warn("stale deliveries moved back to RETRY", slog.String("notification_id", nid), slog.Int("count", count))
-				_ = s.logs.Write(ctx, nid, ch, dto.LevelWarn, "STALE_DELIVERIES_RECOVERED",
+				nctx, span := otel.Tracer("manager").Start(tracing.FromCarrier(ctx, traceOf[nid]), "manager.recover_stale_deliveries")
+				span.SetAttributes(attribute.String("notification.id", nid), attribute.Int("deliveries", count))
+				s.log.WarnContext(nctx, "stale deliveries moved back to RETRY", slog.String("notification_id", nid), slog.Int("count", count))
+				_ = s.logs.Write(nctx, nid, ch, dto.LevelWarn, "STALE_DELIVERIES_RECOVERED",
 					fmt.Sprintf("%d deliveries stuck in SENDING moved to RETRY", count), map[string]any{"count": count})
+				span.End()
 			}
 		}
 	})

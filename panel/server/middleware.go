@@ -77,6 +77,9 @@ func Observe(log *slog.Logger) func(http.Handler) http.Handler {
 			duration := time.Since(start)
 			metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.status)).Inc()
 			metrics.HTTPDuration.WithLabelValues(route, r.Method).Observe(duration.Seconds())
+			if req.Pattern != "" {
+				span.SetName(req.Pattern)
+			}
 			span.SetAttributes(attribute.String("http.route", route), attribute.Int("http.status_code", rec.status))
 			if rec.status >= 500 {
 				span.SetStatus(codes.Error, http.StatusText(rec.status))

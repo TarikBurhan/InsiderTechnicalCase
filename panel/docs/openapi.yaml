@@ -608,6 +608,7 @@ components:
         batch_id: { type: string, format: uuid }
         idempotency_key: { type: string }
         correlation_id: { type: string }
+        trace_id: { type: string, description: "Distributed trace id; open http://localhost:16686/trace/{trace_id}" }
         channel: { $ref: '#/components/schemas/Channel' }
         priority: { $ref: '#/components/schemas/Priority' }
         status: { $ref: '#/components/schemas/NotificationStatus' }
@@ -662,6 +663,7 @@ components:
         event: { type: string, example: BATCH_PRODUCED }
         message: { type: string }
         correlation_id: { type: string }
+        trace_id: { type: string }
         details: { type: object }
         created_at: { type: string, format: date-time }
 

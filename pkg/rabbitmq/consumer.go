@@ -10,6 +10,11 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"notifier/pkg/tracing"
 )
 
 // ErrRequeue can be returned (wrapped) by a handler to ask for the message to
@@ -130,8 +135,19 @@ func (c *Consumer) dispatch(d amqp.Delivery) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.cfg.HandlerTimeout)
 	defer cancel()
 	ctx = ExtractHeaders(ctx, d.Headers)
+	// Consumer span, child of the producer span carried in the headers.
+	ctx, span := tracing.StartChild(ctx, "consume "+c.cfg.Queue, trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.source.name", c.cfg.Queue),
+			attribute.String("messaging.message.id", d.MessageId),
+			attribute.Bool("messaging.rabbitmq.redelivered", d.Redelivered)))
+	defer span.End()
 
 	err := c.safeHandle(ctx, d)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	switch {
 	case err == nil:
 		if ackErr := d.Ack(false); ackErr != nil {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"notifier/panel/dto"
+	"notifier/pkg/tracing"
 )
 
 // NotificationResponse is the public representation of a notification.
@@ -13,6 +14,7 @@ type NotificationResponse struct {
 	BatchID           *string            `json:"batch_id,omitempty"`
 	IdempotencyKey    *string            `json:"idempotency_key,omitempty"`
 	CorrelationID     *string            `json:"correlation_id,omitempty"`
+	TraceID           string             `json:"trace_id,omitempty"`
 	Channel           string             `json:"channel"`
 	Priority          string             `json:"priority"`
 	Status            string             `json:"status"`
@@ -81,6 +83,7 @@ type LogResponse struct {
 	Event         string          `json:"event"`
 	Message       *string         `json:"message,omitempty"`
 	CorrelationID *string         `json:"correlation_id,omitempty"`
+	TraceID       *string         `json:"trace_id,omitempty"`
 	Details       json.RawMessage `json:"details,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 }
@@ -92,6 +95,7 @@ func FromNotification(n dto.Notification, stats *dto.DeliveryStats) Notification
 		BatchID:           n.BatchID,
 		IdempotencyKey:    n.IdempotencyKey,
 		CorrelationID:     n.CorrelationID,
+		TraceID:           tracing.TraceIDFromCarrier(n.TraceContext),
 		Channel:           n.Channel,
 		Priority:          n.Priority,
 		Status:            n.Status,
@@ -126,6 +130,6 @@ func FromDelivery(d dto.Delivery) DeliveryResponse {
 func FromLog(l dto.NotificationLog) LogResponse {
 	return LogResponse{
 		ID: l.ID, DeliveryID: l.DeliveryID, Channel: l.Channel, Service: l.Service, Level: l.Level,
-		Event: l.Event, Message: l.Message, CorrelationID: l.CorrelationID, Details: l.Details, CreatedAt: l.CreatedAt,
+		Event: l.Event, Message: l.Message, CorrelationID: l.CorrelationID, TraceID: l.TraceID, Details: l.Details, CreatedAt: l.CreatedAt,
 	}
 }

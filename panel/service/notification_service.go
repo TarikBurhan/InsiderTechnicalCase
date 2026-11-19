@@ -16,6 +16,7 @@ import (
 	"notifier/panel/request"
 	"notifier/panel/validation"
 	"notifier/pkg/correlation"
+	"notifier/pkg/tracing"
 )
 
 const (
@@ -81,11 +82,15 @@ func (s *NotificationService) prepare(ctx context.Context, req request.CreateNot
 		return dto.NewNotification{}, 0, errs
 	}
 
-	content, err := s.contents.ResolveForNotification(ctx, channel, req.ContentID, req.Content, req.CustomizedContent)
+	cctx, span := tracing.StartChild(ctx, "panel.resolve_content")
+	content, err := s.contents.ResolveForNotification(cctx, channel, req.ContentID, req.Content, req.CustomizedContent)
+	span.End()
 	if err != nil {
 		return dto.NewNotification{}, 0, err
 	}
-	audience, err := s.audience.Resolve(ctx, channel, req.Audience, memo)
+	actx, span := tracing.StartChild(ctx, "panel.resolve_audience")
+	audience, err := s.audience.Resolve(actx, channel, req.Audience, memo)
+	span.End()
 	if err != nil {
 		return dto.NewNotification{}, 0, err
 	}
@@ -106,6 +111,8 @@ func (s *NotificationService) prepare(ctx context.Context, req request.CreateNot
 		Content:            contentJSON,
 		CustomizedContent:  req.CustomizedContent,
 		ScheduledAt:        req.ScheduledAt.Ptr(),
+		// Stored so the Manager continues this request's trace.
+		TraceContext: tracing.Carrier(ctx),
 	}
 	if audience.Type == dto.AudienceTypeDirect {
 		if n.Recipients, err = json.Marshal(audience.Recipients); err != nil {

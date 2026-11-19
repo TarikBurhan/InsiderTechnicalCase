@@ -4,7 +4,7 @@ package queries
 import "fmt"
 
 const notificationColumns = `n.id::text, COALESCE(n.correlation_id, ''), n.channel, n.priority, n.status, n.audience_type,
-	n.audience_sql, n.recipients, n.content, n.customized_content, n.processing_attempts`
+	n.audience_sql, n.recipients, n.content, n.customized_content, n.processing_attempts, COALESCE(n.trace_context, '')`
 
 // ClaimNewNotifications atomically moves due NEW notifications (scheduled_at
 // reached or not set) to PROCESSING, highest priority / oldest first.
@@ -75,5 +75,5 @@ UPDATE notifications n
 SET status = 'COMPLETE', completed_at = now(), updated_at = now()
 WHERE n.status = 'SENDING' AND n.channel = $1
   AND NOT EXISTS (SELECT 1 FROM %s d WHERE d.notification_id = n.id AND d.status IN ('SENDING', 'RETRY'))
-RETURNING n.id::text, COALESCE(n.correlation_id, '')`, deliveryTable)
+RETURNING n.id::text, COALESCE(n.correlation_id, ''), COALESCE(n.trace_context, '')`, deliveryTable)
 }

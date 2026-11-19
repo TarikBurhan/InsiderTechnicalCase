@@ -42,6 +42,7 @@ type Notification struct {
 	CancelledAt        *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	TraceContext       string
 }
 
 // NewNotification is the data needed to insert a notification.
@@ -60,6 +61,7 @@ type NewNotification struct {
 	Content            json.RawMessage
 	CustomizedContent  bool
 	ScheduledAt        *time.Time
+	TraceContext       string
 }
 
 // NotificationFilter is used to list notifications.
@@ -112,6 +114,7 @@ type NotificationLog struct {
 	Event          string
 	Message        *string
 	CorrelationID  *string
+	TraceID        *string
 	Details        json.RawMessage
 	CreatedAt      time.Time
 }

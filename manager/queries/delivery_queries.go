@@ -77,5 +77,6 @@ WHERE d.id IN (
 	LIMIT $2
 	FOR UPDATE SKIP LOCKED
 )
-RETURNING d.id, d.notification_id::text`, table)
+RETURNING d.id, d.notification_id::text,
+	COALESCE((SELECT n.trace_context FROM notifications n WHERE n.id = d.notification_id), '')`, table)
 }

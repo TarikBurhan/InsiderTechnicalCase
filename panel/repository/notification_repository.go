@@ -30,14 +30,14 @@ func scanNotification(row rowScanner) (dto.Notification, error) {
 	err := row.Scan(&n.ID, &n.BatchID, &n.IdempotencyKey, &n.CorrelationID, &n.Channel, &n.Priority, &n.Status,
 		&n.AudienceType, &n.AudienceGroupID, &n.AudienceDefinition, &n.AudienceSQL, &n.Recipients, &n.ContentID,
 		&n.Content, &n.CustomizedContent, &n.ScheduledAt, &n.TotalRecipients, &n.ErrorMessage,
-		&n.ProcessingStarted, &n.SendingStarted, &n.CompletedAt, &n.CancelledAt, &n.CreatedAt, &n.UpdatedAt)
+		&n.ProcessingStarted, &n.SendingStarted, &n.CompletedAt, &n.CancelledAt, &n.CreatedAt, &n.UpdatedAt, &n.TraceContext)
 	return n, err
 }
 
 func insertArgs(n dto.NewNotification) []any {
 	return []any{n.BatchID, n.IdempotencyKey, n.CorrelationID, n.Channel, n.Priority, n.AudienceType,
 		n.AudienceGroupID, nullJSON(n.AudienceDefinition), n.AudienceSQL, nullJSON(n.Recipients), n.ContentID,
-		[]byte(n.Content), n.CustomizedContent, n.ScheduledAt}
+		[]byte(n.Content), n.CustomizedContent, n.ScheduledAt, n.TraceContext}
 }
 
 // Insert creates a notification. created is false when the idempotency key

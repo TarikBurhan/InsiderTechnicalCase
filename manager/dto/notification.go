@@ -15,10 +15,12 @@ type Notification struct {
 	Content            json.RawMessage
 	CustomizedContent  bool
 	ProcessingAttempts int
+	TraceContext       string // W3C trace context of the API request
 }
 
 // CompletedNotification is returned when the finalizer completes a notification.
 type CompletedNotification struct {
 	ID            string
 	CorrelationID string
+	TraceContext  string
 }
